@@ -14,10 +14,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import sys
 
-sys.path.insert(0, "/home/administrator/Mortal3/mortal")  # libriichi3p.so
+# libriichi3p.so 所在；可经 ARENA_MORTAL3 覆盖（gpu-16 = ~/Mortal3）
+_MORTAL3 = os.environ.get("ARENA_MORTAL3", "/home/administrator/Mortal3")
+sys.path.insert(0, f"{_MORTAL3}/mortal")
 import libriichi3p  # noqa: E402
 
 Stat = libriichi3p.stat.Stat
@@ -70,37 +73,38 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--log-dir", required=True)
     ap.add_argument("--players", required=True)
+    ap.add_argument("--rotate", action="store_true",
+                    help="座位轮转复式：按不同模型名跨座位原生聚合（每模型一个 Stat，精确）")
     args = ap.parse_args()
 
     players = [p.strip() for p in args.players.split(",")]
-    names = [f"{i}_{n}" for i, n in enumerate(players)]
     d = str(pathlib.Path(args.log_dir))
 
-    # 每座一个 Stat
-    seat_stat = {}
-    for i, nm in enumerate(names):
-        seat_stat[i] = Stat.from_dir(d, nm)
-    g0 = seat_stat[0]
-    print(f"日志目录: {d}")
-    print(f"对局数 game={g0.game}  总局 round(座0)={g0.round}  座位: " +
-          ", ".join(f"{i}={players[i]}" for i in range(3)))
+    # rows: [(label, [Stat,...])]；val 对多 Stat 取均值（rotate 每模型单 Stat=精确）
+    if args.rotate:
+        models = list(dict.fromkeys(players))  # 去重保序
+        rows = [(m, [Stat.from_dir(d, m)]) for m in models]
+        g0 = rows[0][1][0]
+        print(f"日志目录: {d}  【座位轮转复式：每模型跨 3 座原生聚合】")
+        print(f"每模型对局数 game={g0.game}  总 round={g0.round}  模型: {', '.join(models)}")
+    else:
+        names = [f"{i}_{n}" for i, n in enumerate(players)]
+        seat_stat = {i: Stat.from_dir(d, names[i]) for i in range(3)}
+        g0 = seat_stat[0]
+        print(f"日志目录: {d}")
+        print(f"对局数 game={g0.game}  总局 round(座0)={g0.round}  座位: " +
+              ", ".join(f"{i}={players[i]}" for i in range(3)))
+        model_seats = {}
+        for i, p in enumerate(players):
+            model_seats.setdefault(p, []).append(i)
+        rows = [(f"座{i}:{players[i]}", [seat_stat[i]]) for i in range(3)]
+        for p, seats in model_seats.items():
+            if len(seats) > 1:
+                rows.append((f"{p}(均{len(seats)}座)", [seat_stat[i] for i in seats]))
 
-    # 模型 → 座位列表
-    model_seats = {}
-    for i, p in enumerate(players):
-        model_seats.setdefault(p, []).append(i)
-
-    def val(seats, fn):
-        vs = [safe(fn, seat_stat[i]) for i in seats]
+    def val(stats, fn):
+        vs = [safe(fn, s) for s in stats]
         return sum(vs) / len(vs)
-
-    # ---- headline 表（每座 + 每模型）----
-    rows = []
-    for i in range(3):
-        rows.append((f"座{i}:{players[i]}", [i]))
-    for p, seats in model_seats.items():
-        if len(seats) > 1:
-            rows.append((f"{p}(均{len(seats)}座)", seats))
 
     cols = RATE_LIKE
     print("\n===== Mortal test-play 同款指标（率/顺位；多座=均值，精确）=====")

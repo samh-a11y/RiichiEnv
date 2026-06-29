@@ -13,8 +13,10 @@ RIICHIENV_ROOT = pathlib.Path(__file__).resolve().parents[2]
 MORTAL3 = (RIICHIENV_ROOT.parent / "Mortal3").resolve()
 HOME = pathlib.Path.home()
 
-# 带 torch + 各模型 .so 的解释器（community 3.12 .so / joint libriichi3p.so 都在此 py3.12 可导入）
-CONDA_MORTAL_PY = HOME / "miniconda3" / "envs" / "mortal" / "bin" / "python"
+# 带 torch + 各模型 .so 的解释器（py3.12：community 3.12 .so / joint libriichi3p / v8 abi3 都可导入）。
+# 默认本机 conda mortal；可经 ARENA_ENGINE_PY 覆盖（如 gpu-16 用 ~/aigc_apps/venv/bin/python）。
+CONDA_MORTAL_PY = os.environ.get("ARENA_ENGINE_PY") or str(
+    HOME / "miniconda3" / "envs" / "mortal" / "bin" / "python")
 
 
 def _env(extra: dict | None = None) -> dict:
