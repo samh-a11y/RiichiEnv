@@ -46,6 +46,13 @@ print(env.scores(), env.ranks())
 - `obs.select_action_from_mjai({"type":"dahai",...}) -> Action`：把模型回的 MJAI 动作映射成合法 `Action`（**这是接 Mortal 系模型的关键桥**）。
 - 原生 `riichienv_ml.agents.Agent` 走 RiichiEnv 自带编码器(feat_v1/2/3)+`obs.mask()`/`obs.find_action(idx)`——**仅适用 RiichiEnv 原生训练的模型，不适用我们三个 Mortal 模型**（它们用各自 libriichi obs）。
 
+## ⚠ 服务器环境铁律（c05 血泪，务必遵守）
+**在 gpu-16/远端跑这些项目，一律用既有「真环境」`~/aigc_apps/venv`（py3.12，带 torch + 现代 pip + 全依赖），不要新建空白 `python3.10 -m venv` 去较劲。** 空白 venv 的老 pip 不认 maturin 的 `pip install --group`（需 pip≥25.1）、`pip install -U pip` 走国内镜像会装坏 pip——c05 在这上面耗了大量时间。
+- 三引擎（joint/community/v8）+ riichienv 父进程**同住 aigc 3.12**（模块名 libriichi3p/libriichi/libriichi_sanma/riichienv 互不冲突）；父进程与引擎都用 `~/aigc_apps/venv/bin/python`，置 `ARENA_ENGINE_PY=~/aigc_apps/venv/bin/python`。
+- gpu-16 装 riichienv：`cd ~/riichienv && PATH=$HOME/.cargo/bin:$PATH RUSTUP_TOOLCHAIN=stable ~/aigc_apps/venv/bin/maturin build --release -i ~/aigc_apps/venv/bin/python` → `~/aigc_apps/venv/bin/python -m pip install <cp312 wheel>`。（`RUSTUP_TOOLCHAIN=stable` 绕开 repo 钉的、装坏过的 rust 1.92 toolchain；`build -i` 出 cp312 wheel 再普通 pip install，避开 `--group`、不动 aigc 真环境的 pip。cargo 走 rsproxy.cn 镜像很快。）
+- 本地↔服务器传大文件极慢（~30kB/s）：权重等大资产**打包让用户传**，别直接 scp/rsync 大二进制。
+- **同样适用于姊妹项目 Mortal / Mortal3 / autoplay / learnrust / zeroppo**（共用这些服务器，都用 aigc 真环境）。
+
 ## 约定
 - 中文交流与文档（同 Mortal3）。
 - 不修改上游 Rust 引擎；接入代码、配置、文档放本仓库专属位置（见 specs，避免污染上游目录）。
