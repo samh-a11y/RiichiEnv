@@ -30,11 +30,15 @@ def build_community_bot(seat: int):
 
 def build_joint_bot(seat: int):
     """joint-v2：sys.path 插入 Mortal3/mortal，复刻 mortal.py:31-57 的加载（权重写死绝对路径）。"""
+    import os
     sys.path.insert(0, str(MORTAL3 / "mortal"))
     import torch
     from model import Brain, DQN
     from engine import MortalEngine
     from libriichi3p.mjai import Bot
+
+    use_cuda = os.environ.get("ARENA_DEVICE") == "cuda" and torch.cuda.is_available()
+    dev = torch.device("cuda" if use_cuda else "cpu")
 
     weight = MORTAL3 / "train" / "sl3p-joint-v2" / "archive" / "mortal.final.pth"
     state = torch.load(str(weight), weights_only=True, map_location="cpu")
@@ -53,7 +57,7 @@ def build_joint_bot(seat: int):
         dqn,
         version=version,
         is_oracle=False,
-        device=torch.device("cpu"),
+        device=dev,
         enable_amp=False,
         enable_quick_eval=True,
         enable_rule_based_agari_guard=True,
@@ -70,6 +74,13 @@ def main():
     ap.add_argument("--model", required=True, choices=list(BUILDERS))
     ap.add_argument("--seat", type=int, required=True)
     args = ap.parse_args()
+
+    # 限 1 线程（配合 registry 的 OMP/MKL=1）：单样本推理不吃多线程，多对局并行避免过订阅
+    try:
+        import torch
+        torch.set_num_threads(1)
+    except Exception:
+        pass
 
     bot = BUILDERS[args.model](args.seat)
 

@@ -19,8 +19,15 @@ CONDA_MORTAL_PY = HOME / "miniconda3" / "envs" / "mortal" / "bin" / "python"
 
 def _env(extra: dict | None = None) -> dict:
     env = dict(os.environ)
-    # 强制 CPU：确定性 greedy + 避免 3 个子进程争 GPU（apples-to-apples）
-    env["CUDA_VISIBLE_DEVICES"] = ""
+    # 设备：ARENA_DEVICE=cuda 走 GPU（模型极小，单卡可并存多实例）；否则 CPU（屏蔽 GPU，确定性）
+    device = os.environ.get("ARENA_DEVICE", "cpu")
+    env["ARENA_DEVICE"] = device
+    if device != "cuda":
+        env["CUDA_VISIBLE_DEVICES"] = ""
+    # 每个 runner 限 1 线程：单样本推理不吃多线程，多对局并行时避免 torch 线程过订阅（否则颠簸卡死）
+    for k in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+              "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+        env[k] = "1"
     # runner 用 -m arena3p.engines.mjai_runner 需从 cwd 找到 arena3p 包；显式 PYTHONPATH 兜底
     env["PYTHONPATH"] = os.pathsep.join(
         [str(RIICHIENV_ROOT), env.get("PYTHONPATH", "")]
