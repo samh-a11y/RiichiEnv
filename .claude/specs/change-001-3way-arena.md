@@ -1,6 +1,6 @@
 # change-001 — 三模型（v8 / joint-v2 / community）接入 RiichiEnv 三麻对战器
 
-状态：**进行中** — 步骤 0+1+2+3 DONE（c02/c03，**可以对战**：community+joint-v2 真实混桌跑通），下一步 = 步骤 4（v8）　创建：2026-06-29（c01）
+状态：**进行中** — 步骤 0+1+2+3+4 DONE（c02/c03/c04，**三模型 v8/joint/community 全部接入、真实三方对战跑通**），下一步 = 步骤 5（座位轮转大样本强度报告）　创建：2026-06-29（c01）
 
 ## intent
 把三个 Mortal 系三麻模型接入 RiichiEnv（中立公共 arena），跑三人 sanma 半庄循环赛，得出三者在同一裁判下的真实强度关系（avg placement，公平均 2.00，越低越强）。
@@ -41,8 +41,8 @@
 - [x] **.so abi3 兼容**：py3.10 编但本地 conda mortal py3.12 直接 import 成功 ⇒ **不必建 py3.10 venv**，registry v8 复用 `CONDA_MORTAL_PY`。
 - [x] **方言实测 = standard**（训练 mjai：`start_game.names` 3 个、`start_kyoku.scores/tehais` 3 元、拔北叫 `nukidora`）——与 joint 同，复用 `to_model_standard`/`to_env`。
 - [x] 引擎 smoke：远端（gpuo .venv py3.10）+ 本地（conda py3.12，喂自家 eval_runs god-view 日志）各跑一整局，3 座逐事件 react 不崩，出 dahai/nukidora/pon/hora/reach/kakan 全套。
-- [ ] **全链路 arena smoke（候 10k 腾 RAM）**：`run_arena.py --players v8,community,community --hanchan 1 --seed 42` + `v8,v8,v8`。3 子进程≈5GB，须等 `joint_vs_comm_10k` 跑完。
-- DoD：v8 能在 RiichiEnv 里完整打完半庄（引擎层已证；全链路候 smoke 确认）。
+- [x] **全链路 arena smoke 通过**（c04）：`v8,v8,v8` 自对战（scores=[56300,38200,10500] 和守恒/ranks=[1,2,3]）+ `v8,community,community` 混桌 2 半庄（两局 scores 守恒/ranks 合法，v8 取 1、2 位）。
+- DoD ✅：v8 在 RiichiEnv 里完整打完半庄，跨模型（v8 standard 方言 vs community 4 座方言）真实对战。
 
 ### 步骤 5 — 三方循环赛 + 强度报告
 - [ ] `run_arena.py` 支持三个不同引擎同局；统一 greedy/设备/温度口径；CRN 同 seed。
