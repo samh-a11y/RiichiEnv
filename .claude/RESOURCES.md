@@ -47,7 +47,9 @@
 ### 实测 ground truth
 脚本：`arena3p/collect_mjai_sample.py`（采全事件覆盖样例）+ `arena3p/probe_mjai_dialect.py`（双向往返 + 边界）。环境：`RiichiEnv(game_mode="3p-red-half", rule=GameRule.default_tenhou())`。
 
-**唯一硬性方言差异 = 拔北命名 `kita`（RiichiEnv）vs `nukidora`（Mortal 系模型期望）**：
+> **c03 实测修正**：下面「唯一硬差异=kita↔nukidora」**只对 joint（我们 libriichi3p，原生 3 座）成立**。**community 的 .so 是 4 人格式 mjai（第 4 座掩码）**：按座数组（`start_kyoku.scores/tehais`、`hora/ryukyoku.deltas`）须 3→4 padding（scores+35000 / tehais+13×"?" / deltas+0），否则报 `invalid length 3, expected an array of length 4`。⇒ **方言按模型分**（见 `arena3p/dialect.py`：`to_model_standard` vs `to_model_community`）。社区 4 座掩码约定照搬 Mortal3 `scripts/cross_validate_community_so.py`（17 步状态比对 PASS）。
+
+**拔北命名差异（两模型共有）= `kita`（RiichiEnv）vs `nukidora`（Mortal 系模型期望）**：
 
 | 方向 | RiichiEnv 行为 | Mortal 模型期望 | 桥接适配 |
 |---|---|---|---|
@@ -58,7 +60,7 @@
 
 其余逐事件 diff vs Mortal3 schema **全兼容**：
 - 已覆盖全部事件：start_game / start_kyoku / tsumo / dahai / pon / ankan / kakan / daiminkan / dora / reach / reach_accepted / hora / ryukyoku / end_kyoku / end_game / kita。
-- RiichiEnv 多产出的字段：`ryukyoku.reason`(如 `"exhaustive_draw"`)、`hora.tsumo`(bool)、`hora.ura_markers`(可空数组)。libriichi 用 serde 默认（未 `deny_unknown_fields`）应忽略未知字段 → 预期无害，但 **尚未在 community 端实测确认，留步骤2 端到端验证**（别当已证实）。
+- RiichiEnv 多产出的字段：`ryukyoku.reason`(如 `"exhaustive_draw"`)、`hora.tsumo`(bool)、`hora.ura_markers`(可空数组)。libriichi 用 serde 默认（未 `deny_unknown_fields`）忽略未知字段 → **c03 已实测确认无害**（community+joint 各整局自对战，含 hora/ryukyoku 无错）。
 - 边界全部符合 schema：actor/oya ∈ {0,1,2}、kyoku ∈ {1,2,3}、bakaze ∈ {E,S,W}、万子仅 `1m`/`9m`（无 2m–8m）、`dahai.tsumogiri` 必填、按座观测对手手牌/摸牌为 `"?"`、`start_game` 无 `names`（schema 允许省略）。
 
 ### 三麻坑（Mortal3 c04/c06 已踩，接入沿用）

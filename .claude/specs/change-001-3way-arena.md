@@ -1,6 +1,6 @@
 # change-001 — 三模型（v8 / joint-v2 / community）接入 RiichiEnv 三麻对战器
 
-状态：**进行中** — 步骤 0+1 DONE（c02），下一步 = 步骤 2　创建：2026-06-29（c01）
+状态：**进行中** — 步骤 0+1+2+3 DONE（c02/c03，**可以对战**：community+joint-v2 真实混桌跑通），下一步 = 步骤 4（v8）　创建：2026-06-29（c01）
 
 ## intent
 把三个 Mortal 系三麻模型接入 RiichiEnv（中立公共 arena），跑三人 sanma 半庄循环赛，得出三者在同一裁判下的真实强度关系（avg placement，公平均 2.00，越低越强）。
@@ -21,18 +21,19 @@
 
 ### 步骤 1 — MJAI 方言对齐（头号风险，先做）✅ 核心 DONE（c02）
 - [x] 取 RiichiEnv `3p-red-half` 整局 mjai 事件流逐事件 diff（vs Mortal3 schema + 官方 riichi.dev 文档）。**结论：唯一硬差异 = 拔北 `kita`(RiichiEnv) vs `nukidora`(Mortal)，需 wrapper 双向改写 type；其余字段全兼容**。座位/kyoku/牌集/tsumogiri 边界均符合。详见 `RESOURCES.md §C`。
-- [ ] 用一条已知事件序列喂 community `bot.py`，确认不报错、出合法动作。→ **顺延步骤 2**（需 community 子进程骨架，与步骤 2 重叠；届时一并实测 `reason`/`tsumo` 等多余字段是否真被 libriichi serde 忽略）。
-- DoD：逐事件 diff ✅ + 差异记录 RESOURCES.md §C ✅ + 定适配方案（wrapper 内 kita↔nukidora，不改上游）✅。「被模型完整消费」实测随步骤 2 闭合。
+- [x] 用一条已知事件序列喂 community，确认不报错、出合法动作 ✅（c03）。**实测修正**：community 的 .so 是 **4 人格式 mjai（第 4 座掩码）**，按座数组须 3→4 padding；`reason`/`tsumo`/`ura_markers` 等多余字段确被 serde 忽略（整局自对战无错）。c02 的「仅 kita↔nukidora」只对 joint（原生 3 座）成立。
+- DoD：逐事件 diff ✅ + 差异记录 RESOURCES.md §C ✅ + 定适配方案 ✅ + 「被模型完整消费」实测 ✅（c03，community+joint 各整局跑通）。
 
-### 步骤 2 — community 引擎适配器（最易，打通骨架）
-- [ ] 写 `arena3p/engines/community.py`：subprocess 拉起 `~/miniconda3/envs/mortal/bin/python community_3p/v0.1.0/bot.py`（按其 README 选对 .so），stdin 喂事件、stdout 收动作，封装成 `act(obs)->Action`（内部 `select_action_from_mjai`）。
-- [ ] 自我对战 smoke：3×community 跑 1 半庄无错、产出 scores/ranks。
-- DoD：`run_arena.py --players community,community,community --hanchan 1` 跑通。
+### 步骤 2 — community 引擎适配器（最易，打通骨架）✅ DONE（c03）
+- [x] 建**统一** MJAI 子进程框架（非每模型单文件）：`engines/mjai_runner.py`（子进程，数组进/一条出）+ `engines/subprocess_engine.py`（父进程 send/recv+方言+select_action_from_mjai+none→pass 兜底）+ `engines/registry.py` + `dialect.py` + `run_arena.py`。community 经 `engines/_pkgs/community` symlink package 调其 `model.load_model`（py3.12 .so），不改 Mortal3。
+- [x] 自我对战 smoke：`community×3` 跑 1 半庄无错、scores 和守恒/ranks 正常、**全程 0 行 WARN（零静默兜底）**。
+- [x] **方言修正**：community = 4 人格式（第 4 座掩码），按座数组 3→4 padding（scores+35000/tehais+13×"?"/deltas+0），照搬 Mortal3 `cross_validate_community_so.py` 的 17 步验证约定。
+- DoD：`run_arena.py --players community,community,community --hanchan 1` 跑通 ✅。
 
-### 步骤 3 — joint-v2 引擎适配器
-- [ ] 准备 joint .so（AS81/obs752）：从 Mortal3 `artifacts/so/` 取或本地编 `--features joint`，与 `mortal/{model,engine,bot}.py` + `mortal.final.pth` 组成子进程引擎。
-- [ ] smoke：joint vs community×2 跑 1 半庄无错。⚠ 确认 action 81 joint 在 MJAI 层透明（44≤a<81 映射在其 engine 内）。
-- DoD：joint 能在 RiichiEnv 里完整打完半庄。
+### 步骤 3 — joint-v2 引擎适配器 ✅ DONE（c03）
+- [x] joint .so = `Mortal3/mortal/libriichi3p.so`（已是 AS81/obs752）。runner joint 分支 sys.path 插入 `Mortal3/mortal`，复刻 `mortal.py:31-57` 加载，权重写死绝对路径 `train/sl3p-joint-v2/archive/mortal.final.pth`。
+- [x] smoke：joint 自对战 + **joint vs community×2 混桌**多半庄无错、产出合法 scores/ranks。joint 原生 3 座（权威 `MJAI_SCHEMA_3P.md`），隔离测试直接吃 3 元事件回合法 dahai；action 81 在 .so 内透明（select_action_from_mjai 全程干净匹配，0 WARN）。
+- DoD：joint 能在 RiichiEnv 里完整打完半庄 ✅。
 
 ### 步骤 4 — v8 引擎适配器（最重）
 - [ ] 从 gpuo fetch v8 资产到本地 gitignore 路径：`runs/v8_bc/model.pth` + `engine/libriichi-sanma` .so + `model/net.py` + `features/`。
@@ -62,6 +63,8 @@
 6. **性能**：子进程 IPC 每步开销；大批量对战时考虑常驻进程 + 批量 react。
 
 ## 续点
-- **从步骤 2 开始**（community 引擎适配器）。步骤 0+1 已 DONE（c02）。
-- 步骤 2 关键事实（c02 已探明）：community 子进程 = conda `mortal`(py3.12) python + `../Mortal3/community_3p/v0.1.0/libriichi-3.12-x86_64-unknown-linux-gnu.so`（软链成 `libriichi.so`）+ `mortal.pth`；接口 `libriichi.mjai.Bot(engine, seat).react(单条mjai事件JSON字符串)`，engine 由 `model.load_model(seat)` 起（torch 2.6 已在 conda mortal）。wrapper 在喂入/收回处做 kita↔nukidora 改写。
-- 接入代码全部新建在 `arena3p/`，不碰 `riichienv-*` 上游树。任何一步完成即 commit（节点粒度）。
+- **从步骤 4 开始**（v8 引擎适配器）。步骤 0+1+2+3 已 DONE（c02/c03）；community+joint 可在 RiichiEnv 真实对战。
+- 步骤 4 已定方式 = **本地 fetch + py3.10 venv**：fetch `runs/v8_bc/model.pth` + libriichi-sanma .so（py3.10）+ `model/net.py` + `features/` 到本地 gitignore 路径；建 py3.10 venv 装 torch；`engines/mjai_runner.py` 加 v8 分支（建 `libriichi_sanma.mjai.Bot` + SanmaNet，**guard 关**）；`engines/registry.py` 加 v8 条目（python 指向 py3.10 venv）。
+  - **v8 方言待实测**：隔离喂一条 3 元 `start_kyoku`——不报 `invalid length 3` 则原生 3 座（dialect="standard"）；报错则 4 座掩码（dialect="community"）。判别法见 c03。
+- 步骤 5：`run_arena.py` 加**座位轮转** + 大样本 CRN（每对照量级参考 gpuo 5001 半庄），算 avg placement / rank 直方图 / 放铳和率分项。当前固定座位 avg_place 机械=2.00，非真实强度。
+- 接入代码全在 `arena3p/`（统一 runner 架构，加模型 = registry 加一条 + runner 加一个 builder + 必要时 dialect 加一种），不碰 `riichienv-*` 上游树与 Mortal3。任何一步完成即 commit（节点粒度）。

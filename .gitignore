@@ -10,3 +10,5 @@ riichienv-ml-xt/
 debug-riichienv-with-mortal
 mjsoul-parser
 **/.ipynb_checkpoints
+# arena3p：指向 Mortal3 权重/.so 的 symlink package（百 MB 二进制，勿入库）
+arena3p/engines/_pkgs/
