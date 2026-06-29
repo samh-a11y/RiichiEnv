@@ -66,7 +66,57 @@ def build_joint_bot(seat: int):
     return Bot(engine, seat)  # -> 原生 libriichi3p.mjai.Bot
 
 
-BUILDERS = {"community": build_community_bot, "joint": build_joint_bot}
+def build_v8_bot(seat: int):
+    """v8（同事 gpuo BC 384x24 / obs575 / action44）：fetch 到 _pkgs/v8 的 .so+net+features+权重。
+
+    guard **关闭**（不挂 danger head）。最小 engine 复刻同事 eval/agent_v2.SanmaV2Engine 的
+    react_batch（鸭子类型，被 libriichi_sanma.mjai.Bot 调用），仅把 obs 改 575 / mask 改 44 /
+    version=3 / SanmaNet 用 cfg.in_channels=575 装载。action 44 的 id→mjai 由 .so 内部映射。
+    """
+    import os
+    import numpy as np
+    import torch
+
+    pkg = pathlib.Path(__file__).resolve().parent / "_pkgs" / "v8"
+    sys.path.insert(0, str(pkg))  # libriichi_sanma.so + model/（SanmaNet）+ features/（consts）
+    from model.net import SanmaNet
+    from libriichi_sanma.mjai import Bot
+
+    use_cuda = os.environ.get("ARENA_DEVICE") == "cuda" and torch.cuda.is_available()
+    dev = torch.device("cuda" if use_cuda else "cpu")
+
+    class SanmaV8Engine:
+        engine_type = "mortal"          # 以下 4 个鸭子类型属性 Rust MortalBatchAgent 构造时读
+        is_oracle = False
+        enable_quick_eval = False
+        enable_rule_based_agari_guard = False
+
+        def __init__(self, model_path):
+            self.name = "v8_bc"
+            self.version = 3            # rich 575ch obs（必须 3）
+            self.device = dev
+            ck = torch.load(model_path, map_location="cpu", weights_only=False)
+            cfg = ck["cfg"]             # {channels:384, blocks:24, in_channels:575, oracle:False}
+            self.model = SanmaNet(channels=cfg["channels"], blocks=cfg["blocks"],
+                                  in_channels=cfg["in_channels"])
+            self.model.load_state_dict(ck["model"])
+            self.model.to(dev).eval()
+
+        def react_batch(self, states, masks, invisible_states):
+            obs = torch.as_tensor(np.stack(states, 0), dtype=torch.float32, device=dev)  # (B,575,34)
+            m = torch.as_tensor(np.stack(masks, 0), dtype=torch.bool, device=dev)         # (B,44)
+            with torch.inference_mode():
+                logits = self.model(obs)
+            masked = logits.masked_fill(~m, float("-inf"))
+            actions = masked.argmax(-1)
+            q = torch.nan_to_num(masked, neginf=-1e9)  # 跨 py/rust 边界须有限值
+            return actions.tolist(), q.tolist(), [x for x in masks], [True] * len(states)
+
+    engine = SanmaV8Engine(str(pkg / "model.pth"))
+    return Bot(engine, seat)  # -> 原生 libriichi_sanma.mjai.Bot
+
+
+BUILDERS = {"community": build_community_bot, "joint": build_joint_bot, "v8": build_v8_bot}
 
 
 def main():

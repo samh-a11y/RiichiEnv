@@ -55,6 +55,14 @@ REGISTRY: dict[str, dict] = {
         "cwd": str(RIICHIENV_ROOT),
         "dialect": "standard",  # 原生 3 座，仅 kita↔nukidora
     },
+    "v8": {
+        # 同事 gpuo BC 模型；.so/net/features/权重 fetch 到 _pkgs/v8（py3.10 编但 abi3，conda mortal py3.12 可用）
+        "python": str(CONDA_MORTAL_PY),
+        "runner_args": ["--model", "v8"],
+        "env": _env(),
+        "cwd": str(RIICHIENV_ROOT),
+        "dialect": "standard",  # 实测训练 mjai：原生 3 座（scores/tehais 3 元）+ nukidora，与 joint 同
+    },
 }
 
 

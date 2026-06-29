@@ -10,5 +10,6 @@
 | arena 对战框架（统一 MJAI 子进程 runner + run_arena） | c03 |
 | community 引擎适配器 | c03（4 座 padding + symlink package） |
 | joint-v2 引擎适配器 | c03（原生 3 座，仅 kita↔nukidora） |
-| v8 引擎适配器 | （待，步骤4：本地 fetch + py3.10 venv） |
+| v8 引擎适配器 | c04（mjai.Bot 同构 / .so abi3 跑 py3.12 / 方言 standard / 引擎双 smoke；arena 候 10k） |
+| 大样本评测 + 复现 Mortal 指标（run_eval/stat_report/可视化） | c03 末（commit 7e2a667）；10k 跑中 |
 | 三方循环赛 + 强度报告 | （待，步骤5：座位轮转大样本） |

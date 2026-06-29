@@ -18,7 +18,10 @@
 - 机器：`ssh gpuo` = root@`p-0cc7s1smel9wrd2g0`，无影 vGPU RTX5880-Ada-48Q，CUDA12.8，venv `/root/sanma/.venv`(py3.10)。
 - 引擎：`/root/sanma/engine/libriichi-sanma`（pkg `libriichi-sanma`，`[lib] name=libriichi_sanma`，pyo3+numpy0.25），产物 `engine/libriichi-sanma/target/release/liblibriichi_sanma.so`。obs `version==3` rich 575ch×34，**action space 44**（v8 扩的）。
 - 权重：`/root/sanma/runs/v8_bc/model.pth`（101MB；`latest.pth`=304MB 含 optimizer）。net=`model/net.py::SanmaNet`(ch384/blk24/in575, 25.31M params)。
-- 推理代码：`/root/sanma/eval/agent_v8_guard.py`（含 guard，可关）、`model/net.py`、`features/`(consts.py/encode.py)。⚠ 同事是**in-process agent**（`arena.py_vs_py`），**没有现成 stdin/stdout MJAI bot.py** → 接 RiichiEnv 需我们写一层 MJAI loop wrapper（喂 mjai 事件→重建 PlayerState→encode→net→argmax→回 mjai 动作）。这是 change-001 最高风险子项。
+- 推理代码：`/root/sanma/eval/agent_v8_guard.py`（含 guard，可关）、`model/net.py`、`features/`(consts.py/encode.py)。
+- **✅ c04 实测推翻"最高风险/需自写 wrapper"**：v8 **有** `libriichi_sanma.mjai.Bot(engine, seat)`，协议与 joint/community 同构（engine 鸭子类型实现 `react_batch(states,masks,invisible)->(actions,q,masks,greedy)`；属性 `engine_type='mortal'/is_oracle=False/enable_quick_eval=False/enable_rule_based_agari_guard=False/name/version`）。同事只是没写 bot.py（用 FastAPI `sanma_joint_api.py` /decide 包装，那就是 mjai.Bot 路径）。⇒ 我方**最小 engine** 即可（`arena3p/engines/mjai_runner.build_v8_bot` 复刻 `eval/agent_v2.SanmaV2Engine` 改 obs575/mask44/version3，**guard 关=不挂 danger head**）。
+- **本地接入（c04）**：`.so` abi3 兼容 → conda mortal py3.12 直接 import，**无需 py3.10 venv**；资产 `bash arena3p/fetch_v8.sh` fetch 到 `_pkgs/v8/`（.so/model/features/model.pth，gitignore）。权重 `model.pth` keys=`['model','cfg']`、cfg=`{channels:384,blocks:24,in_channels:575,oracle:False}`、`weights_only=False` 加载。action 44 布局见 `features/consts.py`（0..36 discard 含赤/37 riichi/38 pon/39 kan/40 kita/41 hora/42 ryukyoku/43 pass）；id→mjai 由 .so 内部映射，最小 engine 不用管。
+- **方言 = standard**（同 joint）：训练 mjai 实测原生 3 座（scores/tehais 3 元）+ 拔北叫 `nukidora`，复用 `to_model_standard`/`to_env`。
 - 部署参照：`/root/sanma/sanma_joint_api.py`（FastAPI /decide，torch 接 Rust Bot，契约同 Akagi）——MJAI react 流程可借鉴。
 - ⚠ 调研快照（含强度数据）：`../Mortal3/.claude/gpuo-coworker-progress.md`。该目录非 git，只读。
 

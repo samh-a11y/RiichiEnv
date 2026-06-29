@@ -35,12 +35,14 @@
 - [x] smoke：joint 自对战 + **joint vs community×2 混桌**多半庄无错、产出合法 scores/ranks。joint 原生 3 座（权威 `MJAI_SCHEMA_3P.md`），隔离测试直接吃 3 元事件回合法 dahai；action 81 在 .so 内透明（select_action_from_mjai 全程干净匹配，0 WARN）。
 - DoD：joint 能在 RiichiEnv 里完整打完半庄 ✅。
 
-### 步骤 4 — v8 引擎适配器（最重）
-- [ ] 从 gpuo fetch v8 资产到本地 gitignore 路径：`runs/v8_bc/model.pth` + `engine/libriichi-sanma` .so + `model/net.py` + `features/`。
-- [ ] 因 v8 无 stdin/stdout bot，自写 MJAI loop wrapper（参照 `eval/agent_v8_guard.py` 的 react 流程 + `sanma_joint_api.py`），**guard 关闭**（guard 是负结果，且非模型本体强度）。
-- [ ] smoke：v8 vs community×2 跑 1 半庄无错。
-- 备选：若本地 .so/torch 装不起来，改远程子进程（ssh 常驻 bot），但 IPC 延迟更高。
-- DoD：v8 能在 RiichiEnv 里完整打完半庄。
+### 步骤 4 — v8 引擎适配器（最重）🟡 代码完成·引擎双验（c04）
+- [x] 从 gpuo fetch v8 资产到 `arena3p/engines/_pkgs/v8/`（gitignore）：`model.pth`(101MB,md5 校验) + `libriichi_sanma.so` + `model/net.py` + `features/`。脚本 `arena3p/fetch_v8.sh`（幂等）。
+- [x] **关键探明**：v8 **有** `libriichi_sanma.mjai.Bot`（同事只是用 FastAPI 包装，没写 bot.py）；协议与 joint/community 同构——engine 是鸭子类型对象实现 `react_batch(states,masks,invisible)->(actions,q,masks,greedy)`，读 `engine_type/is_oracle/enable_quick_eval/enable_rule_based_agari_guard/name/version`。⇒ **不必自写完整 wrapper**，写最小 `SanmaV8Engine`（`mjai_runner.build_v8_bot`）即可，**guard 关 = 不挂 danger head**。
+- [x] **.so abi3 兼容**：py3.10 编但本地 conda mortal py3.12 直接 import 成功 ⇒ **不必建 py3.10 venv**，registry v8 复用 `CONDA_MORTAL_PY`。
+- [x] **方言实测 = standard**（训练 mjai：`start_game.names` 3 个、`start_kyoku.scores/tehais` 3 元、拔北叫 `nukidora`）——与 joint 同，复用 `to_model_standard`/`to_env`。
+- [x] 引擎 smoke：远端（gpuo .venv py3.10）+ 本地（conda py3.12，喂自家 eval_runs god-view 日志）各跑一整局，3 座逐事件 react 不崩，出 dahai/nukidora/pon/hora/reach/kakan 全套。
+- [ ] **全链路 arena smoke（候 10k 腾 RAM）**：`run_arena.py --players v8,community,community --hanchan 1 --seed 42` + `v8,v8,v8`。3 子进程≈5GB，须等 `joint_vs_comm_10k` 跑完。
+- DoD：v8 能在 RiichiEnv 里完整打完半庄（引擎层已证；全链路候 smoke 确认）。
 
 ### 步骤 5 — 三方循环赛 + 强度报告
 - [ ] `run_arena.py` 支持三个不同引擎同局；统一 greedy/设备/温度口径；CRN 同 seed。
