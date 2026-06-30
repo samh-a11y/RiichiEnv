@@ -1,6 +1,6 @@
 # change-001 — 三模型（v8 / joint-v2 / community）接入 RiichiEnv 三麻对战器
 
-状态：**进行中** — 步骤 0+1+2+3+4 DONE（c02/c03/c04，**三模型 v8/joint/community 全部接入、真实三方对战跑通**），下一步 = 步骤 5（座位轮转大样本强度报告）　创建：2026-06-29（c01）
+状态：**核心完成** — 步骤 0~5 全 DONE（c02/c03/c04/c05）。三模型接入 + 12000 局座位轮转复式得真实强弱 **joint>v8>community（极接近）**。可选收尾：可视化复核/正式报告/扩样本。　创建：2026-06-29（c01）
 
 ## intent
 把三个 Mortal 系三麻模型接入 RiichiEnv（中立公共 arena），跑三人 sanma 半庄循环赛，得出三者在同一裁判下的真实强度关系（avg placement，公平均 2.00，越低越强）。
@@ -44,11 +44,11 @@
 - [x] **全链路 arena smoke 通过**（c04）：`v8,v8,v8` 自对战（scores=[56300,38200,10500] 和守恒/ranks=[1,2,3]）+ `v8,community,community` 混桌 2 半庄（两局 scores 守恒/ranks 合法，v8 取 1、2 位）。
 - DoD ✅：v8 在 RiichiEnv 里完整打完半庄，跨模型（v8 standard 方言 vs community 4 座方言）真实对战。
 
-### 步骤 5 — 三方循环赛 + 强度报告
-- [ ] `run_arena.py` 支持三个不同引擎同局；统一 greedy/设备/温度口径；CRN 同 seed。
-- [ ] 跑足量半庄（参考 gpuo：每对照 5001 半庄量级；三方混桌需注意座位平衡，每个模型轮坐三个座位）。
-- [ ] 算各模型 avg placement + rank histogram + 放铳/和率分项，对齐 2.00 公平线。
-- DoD：产出三者强度排序表（带样本量、CRN、座位平衡说明），写进 STATUS + 新 session。
+### 步骤 5 — 三方循环赛 + 强度报告 ✅ DONE（c05）
+- [x] `run_eval.py --rotate`：三个不同引擎同局，3 循环座次 [j,c,v8]/[c,v8,j]/[v8,j,c]，CRN 同 seed，统一 CPU/greedy 口径。
+- [x] gpu-16（aigc 3.12）跑 **4000 seed × 3 轮转 = 12000 半庄**，每模型每座正好 4000 局（座位完全平衡，健全性校验通过）。94.5min @127 半庄/min，26 workers。
+- [x] `stat_report.py --rotate` 按模型跨座原生聚合，出 avg_rank/avg_pt/1-3位率/和率/放铳率/立直率/副露率 + 进阶事件指标。
+- DoD ✅：**joint(1.984/+1.4) > v8(1.999/+0.1) > community(2.017/-1.5)，三者极接近**；joint>community ~3σ，余在噪声内。存 `eval_runs/rr_4k3/stat_rotate_12000.txt`，写入 STATUS + sessions/c05.md。
 
 ## 验证门禁（可被命令/grep 证实）
 - `python -c "from riichienv import RiichiEnv"` 通过。
