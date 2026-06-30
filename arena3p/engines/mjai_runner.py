@@ -217,6 +217,12 @@ def build_v8guard_bot(seat: int):
                 legal_slots = [s for s in range(37) if row_mask[s]]
                 if len(legal_slots) < 2:
                     continue
+                cur_t34 = slot_to_t34(act)
+                # ★ 加速（动作严格等价）：sanma_guard 在 danger[cur]<FLOOR 时直接放行(不看 ukeire)，
+                # 故提前跳过昂贵的 ukeire 枚举——实战大部分弃牌 danger<floor。float() 对齐原版 tolist
+                # 口径；FLOOR=0 的压测下 danger>=0 必不跳过 → 完整 guard 路径仍被 review 覆盖。
+                if float(danger_np[b][cur_t34]) < FLOOR:
+                    continue
                 # tile34 → emit slot（plain slot <34 优先 over aka >=34）
                 t34_to_slot, legal_t34 = {}, []
                 for s in legal_slots:
@@ -235,7 +241,6 @@ def build_v8guard_bot(seat: int):
                     uk = ukeire_by_tile(hand34, seen_out, legal_t34)
                 except Exception:  # noqa: BLE001 -- 决策不能因 guard 计算崩
                     continue
-                cur_t34 = slot_to_t34(act)
                 action_dict = {"type": "dahai", "pai": TILES_34[cur_t34], "tsumogiri": False}
                 new_dict, info = sanma_guard(
                     action_dict, danger_np[b].tolist(), uk, legal_t34,
