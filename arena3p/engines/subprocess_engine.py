@@ -22,9 +22,11 @@ def _type_name(action_type) -> str:
 
 
 class SubprocessMjaiEngine(MjaiEngine):
-    def __init__(self, model_name: str, seat: int):
+    def __init__(self, model_name: str, seat: int, record: bool = False):
         self.model_name = model_name
         self.seat = seat
+        self.record = record       # review：录 (视角事件流, mjai动作) tape 供 ground truth 重放比对
+        self.tape: list[dict] = []
         spec = registry.get_spec(model_name)
         # 按模型选 env→model 事件改写器（community 需 3→4 座 padding；joint 仅 kita→nukidora）
         self._to_model = dialect.DIALECTS[spec["dialect"]]
@@ -82,18 +84,27 @@ class SubprocessMjaiEngine(MjaiEngine):
             )
         resp = json.loads(line)
 
+        select_ok = None   # None=resp 为 none（无需 select）；True/False=select 成 / 败
         if resp.get("type") == "none":
-            return self._resolve_none(obs)
+            result = self._resolve_none(obs)
+        else:
+            act = obs.select_action_from_mjai(dialect.to_env(resp))
+            if act is None:
+                sys.stderr.write(
+                    f"[{self.model_name}:{self.seat}] WARN select_action_from_mjai 未匹配："
+                    f"{json.dumps(resp, ensure_ascii=False)}；legals="
+                    f"{[_type_name(a.action_type) for a in obs.legal_actions()]}\n"
+                )
+                result = self._resolve_none(obs)
+                select_ok = False
+            else:
+                result = act
+                select_ok = True
 
-        act = obs.select_action_from_mjai(dialect.to_env(resp))
-        if act is None:
-            sys.stderr.write(
-                f"[{self.model_name}:{self.seat}] WARN select_action_from_mjai 未匹配："
-                f"{json.dumps(resp, ensure_ascii=False)}；legals="
-                f"{[_type_name(a.action_type) for a in obs.legal_actions()]}\n"
-            )
-            return self._resolve_none(obs)
-        return act
+        if self.record:
+            # events = dialect 改写后（与喂 truth Bot 同口径）；resp = runner 原始 mjai（已去 meta）
+            self.tape.append({"events": events, "resp": resp, "select_ok": select_ok})
+        return result
 
     def _resolve_none(self, obs):
         """bot 弃和/不鸣：优先映射成 PASS，绝不误退化成 legal[0]（可能是 pon）。"""

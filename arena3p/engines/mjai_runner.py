@@ -40,7 +40,11 @@ def build_joint_bot(seat: int):
     use_cuda = os.environ.get("ARENA_DEVICE") == "cuda" and torch.cuda.is_available()
     dev = torch.device("cuda" if use_cuda else "cpu")
 
-    weight = MORTAL3 / "train" / "sl3p-joint-v2" / "archive" / "mortal.final.pth"
+    # 权重可经 ARENA_JOINT_WEIGHT 覆盖（默认 joint-v2；本任务=2 测用 sl3p-joint-result/3p-mse-v1.1.pth）。
+    # 实测 3p-mse-v1.1 与 joint-v2 同构（version=4 / conv192 / blk40 / 同 config+mortal+current_dqn keys），
+    # 故直接换权重路径即可（用户言「相关 mjai 接口已完备」）。
+    weight = os.environ.get("ARENA_JOINT_WEIGHT") or str(
+        MORTAL3 / "train" / "sl3p-joint-v2" / "archive" / "mortal.final.pth")
     state = torch.load(str(weight), weights_only=True, map_location="cpu")
     cfg = state["config"]
     version = cfg["control"].get("version", 1)
@@ -116,7 +120,147 @@ def build_v8_bot(seat: int):
     return Bot(engine, seat)  # -> 原生 libriichi_sanma.mjai.Bot
 
 
-BUILDERS = {"community": build_community_bot, "joint": build_joint_bot, "v8": build_v8_bot}
+def build_v8guard_bot(seat: int):
+    """v8 + guard（同事 sanma_v8_guard 完整版）：BC backbone + danger head + mitoshi 防守 guard。
+
+    **精确复刻** 同事 sanma_joint_api.py `SanmaV8GuardEngine` 的 *defense-guard* 路径
+    （sanma 标定参数 floor=0.10 / gap=0.05 / margin=2 + 赤dora 保护 0.25 + Q 保护 1.0）：
+    在自家弃牌点用 danger 头 + 真实牌效枚数重排——不退向听 ∩ 枚数小让(≤margin) ∩ danger 显著
+    更低(≥gap) 才换更安全张；赤5/强役(Q差≥1)不换。reach_suppress / tenpai_rescue **关**（与同事
+    默认一致），故无需 /decide 层的 pending_own_discards / pending_genbutsu_all。
+
+    资产经 env：ARENA_V8GUARD_DIR（含 model/net.py 44-action、features/、engine/.so、local_model/
+    guard helpers）、ARENA_V8_DANGER（danger head 权重）。obs/version 同 v8（575ch / version=3）。
+    """
+    import os
+    import numpy as np
+    import torch
+
+    gdir = pathlib.Path(os.environ["ARENA_V8GUARD_DIR"]).resolve()
+    sys.path.insert(0, str(gdir))                  # model/(SanmaNet 44act) + features/(consts N_ACTIONS=44)
+    sys.path.insert(0, str(gdir / "engine"))       # libriichi_sanma.so
+    sys.path.insert(0, str(gdir / "local_model"))  # sanma_ukeire / mitoshi_sanma_guard
+    from model.net import SanmaNet, SanmaDangerHead
+    from libriichi_sanma.mjai import Bot
+    from sanma_ukeire import ukeire_by_tile
+    from mitoshi_sanma_guard import sanma_guard
+
+    use_cuda = os.environ.get("ARENA_DEVICE") == "cuda" and torch.cuda.is_available()
+    dev = torch.device("cuda" if use_cuda else "cpu")
+    model_path = str(gdir / "runs" / "v8_bc" / "model.pth")
+    danger_path = os.environ.get("ARENA_V8_DANGER",
+                                 str(gdir / "runs" / "v8_danger" / "danger_head.pth"))
+
+    # ---- sanma 标定 guard 参数（= sanma_joint_api SanmaV8GuardEngine 默认）。env 名与同事一致、
+    # 默认值一致 → 正式跑（不设 env）两边等价；review 等价性压测可临时设宽松 env 强制走 guard 换牌路径。----
+    FLOOR = float(os.environ.get("SANMA_GUARD_FLOOR", "0.10"))      # danger_floor
+    GAP = float(os.environ.get("SANMA_GUARD_GAP", "0.05"))         # danger_gap
+    MARGIN = int(os.environ.get("SANMA_GUARD_MARGIN", "2"))        # ukeire_margin
+    AKA_GAP = float(os.environ.get("SANMA_GUARD_AKA_GAP", "0.25"))  # 赤dora 保护 gap
+    Q_GAP = float(os.environ.get("SANMA_GUARD_Q_GAP", "1.0"))      # Q 保护 gap
+    SEEN_PLANE = 463                       # obs 通道：tiles_seen / 4（同事实测唯一）
+    TILES_34 = [f"{n}{s}" for s in "mps" for n in range(1, 10)] + ["E", "S", "W", "N", "P", "F", "C"]
+    ID34 = {t: i for i, t in enumerate(TILES_34)}
+    AKA_SLOT_T34 = {34: ID34["5m"], 35: ID34["5p"], 36: ID34["5s"]}  # 44-action 赤5 slot → deaka t34
+    AKA_SLOTS = frozenset({34, 35, 36})
+
+    def slot_to_t34(slot):
+        return AKA_SLOT_T34[slot] if slot in AKA_SLOT_T34 else slot
+
+    def aka_protect_skip(from_slot, to_slot, dng_from, dng_to):
+        # 别为微小 danger 差把非红牌改判成会丢赤dora的红5；danger 大降(≥AKA_GAP)仍换（安全优先）
+        if AKA_GAP > 0 and to_slot in AKA_SLOTS and from_slot not in AKA_SLOTS:
+            return (dng_from - dng_to) < AKA_GAP
+        return False
+
+    class SanmaV8GuardEngine:
+        engine_type = "mortal"          # 鸭子类型属性（Rust MortalBatchAgent 构造时读）
+        is_oracle = False
+        enable_quick_eval = False
+        enable_rule_based_agari_guard = False
+
+        def __init__(self):
+            self.name = "v8_guard"
+            self.version = 3            # rich 575ch obs（必须 3）
+            self.device = dev
+            ck = torch.load(model_path, map_location="cpu", weights_only=False)
+            cfg = ck["cfg"]             # {channels:384, blocks:24, in_channels:575, oracle:False}
+            self.model = SanmaNet(channels=cfg["channels"], blocks=cfg["blocks"],
+                                  in_channels=cfg["in_channels"])
+            self.model.load_state_dict(ck["model"])
+            self.model.to(dev).eval()
+            dh = torch.load(danger_path, map_location="cpu", weights_only=False)
+            assert dh.get("concat_oracle") is False, \
+                "danger head trained with oracle concat; obs mismatch"
+            self.danger_head = SanmaDangerHead(channels=cfg["channels"], hidden=256)
+            self.danger_head.load_state_dict(dh["head"])
+            self.danger_head.to(dev).eval()
+
+        def react_batch(self, states, masks, invisible_states):
+            obs_np = np.stack(states, 0).astype(np.float32)        # (B,575,34)
+            obs = torch.as_tensor(obs_np, device=dev)
+            m = torch.as_tensor(np.stack(masks, 0), dtype=torch.bool, device=dev)  # (B,44)
+            with torch.inference_mode():
+                phi = self.model.features(obs)                     # (B,C,34) 冻结主干
+                logits = self.model.head(phi)                      # (B,44)
+                danger = torch.sigmoid(self.danger_head(phi))      # (B,34) 每张放铳风险
+            masked = logits.masked_fill(~m, float("-inf"))
+            actions = masked.argmax(-1)
+            actions_list = actions.tolist()
+            mask_np = m.cpu().numpy()                              # (B,44) bool
+            danger_np = danger.cpu().numpy()                       # (B,34)
+
+            for b, act in enumerate(actions_list):
+                if act > 36:                                       # 非弃牌 → 不 guard
+                    continue
+                row_mask = mask_np[b]
+                legal_slots = [s for s in range(37) if row_mask[s]]
+                if len(legal_slots) < 2:
+                    continue
+                # tile34 → emit slot（plain slot <34 优先 over aka >=34）
+                t34_to_slot, legal_t34 = {}, []
+                for s in legal_slots:
+                    t = slot_to_t34(s)
+                    if t not in t34_to_slot or s < t34_to_slot[t]:
+                        t34_to_slot[t] = s
+                    if t not in legal_t34:
+                        legal_t34.append(t)
+                # hand34（ch0..3）+ 手外可见（tiles_seen - hand34）。同事实测 hand34==PlayerState.tehai、
+                # obs[463]*4==tiles_seen。
+                row_obs = obs_np[b]                                # (575,34)
+                hand34 = row_obs[0:4].sum(axis=0).round().astype(int).tolist()
+                tiles_seen = (row_obs[SEEN_PLANE] * 4.0).round().astype(int)
+                seen_out = [max(0, int(tiles_seen[t]) - hand34[t]) for t in range(34)]
+                try:
+                    uk = ukeire_by_tile(hand34, seen_out, legal_t34)
+                except Exception:  # noqa: BLE001 -- 决策不能因 guard 计算崩
+                    continue
+                cur_t34 = slot_to_t34(act)
+                action_dict = {"type": "dahai", "pai": TILES_34[cur_t34], "tsumogiri": False}
+                new_dict, info = sanma_guard(
+                    action_dict, danger_np[b].tolist(), uk, legal_t34,
+                    last_draw=None, reached=False,
+                    ukeire_margin=MARGIN, danger_gap=GAP, danger_floor=FLOOR,
+                )
+                if info is not None:
+                    to_t34 = ID34[new_dict["pai"]]
+                    new_slot = t34_to_slot.get(to_t34)
+                    if new_slot is not None and new_slot != act:
+                        if aka_protect_skip(act, new_slot, info["dng_from"], info["dng_to"]):
+                            continue
+                        if Q_GAP > 0 and (masked[b, act].item()
+                                          - masked[b, new_slot].item()) >= Q_GAP:
+                            continue                               # 模型对原牌 Q 显著高（强役/打点）→ 不换
+                        actions_list[b] = new_slot
+            q = torch.nan_to_num(masked, neginf=-1e9)              # 跨 py/rust 边界须有限值
+            return actions_list, q.tolist(), [x for x in masks], [True] * len(states)
+
+    engine = SanmaV8GuardEngine()
+    return Bot(engine, seat)  # -> 原生 libriichi_sanma.mjai.Bot
+
+
+BUILDERS = {"community": build_community_bot, "joint": build_joint_bot,
+            "v8": build_v8_bot, "v8guard": build_v8guard_bot}
 
 
 def main():

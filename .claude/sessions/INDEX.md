@@ -14,3 +14,5 @@
 | 大样本评测 + 复现 Mortal 指标（run_eval/stat_report/可视化） | c03 末（commit 7e2a667）；c04（fixed-seat 6302）；c05（rotate 12000） |
 | 三方循环赛 + 强度报告 | c05 ✅（座位轮转复式 12000 局：joint>v8>community 极接近） |
 | gpu-16 部署 + 服务器环境铁律（aigc 3.12，别空白 python3.10） | c05（commit 3798431；CLAUDE.md + 记忆） |
+| change-002 第二测试任务（2×joint-mse vs 1×v8guard 复式 30k） | c06（接入 build_v8guard_bot 复刻同事 guard + 2v1 轮转） |
+| 接入等价性验证（牌谱去原版模型 review 一致率 100%） | c06（gen_tapes/replay_truth + guard 压测 + helper 穷举对拍） |

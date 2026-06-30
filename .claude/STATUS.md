@@ -3,7 +3,14 @@
 > 维护约定：本文件只放「当前状态 / 产物 / 下一步 / 待决」这类会变的事实。
 > 会话日志只做索引：每个 session 一行（日期 + 一句话 + 链接），详情写进 `sessions/cNN.md`。
 
-## 当前阶段（2026-06-30）：**change-001 步骤 2+3+4+5 DONE —— 核心任务完成**（三模型接入 + 12000 局复式循环赛得真实强弱：joint > v8 > community，极接近）
+## 当前阶段（2026-06-30）：change-001 核心完成；**change-002（第二测试任务）接入 + 等价性验证 100% PASS → gpu-16 跑 30k 中**
+
+### change-002（c06）：2×joint-mse vs 1×v8guard 座位轮转复式 30k
+- joint 换在线训练 `3p-mse-v1.1`（实测 ≡joint-v2 同构，仅换权重路径）；v8 换**带 guard** 的 `sanma_v8_guard`（v8 BC backbone + danger head + mitoshi 防守 guard；c04 接的是 guard 关的 v8_bc）；**2v1 复式**（`run_eval._seatings` 放宽；Stat 同名多座实测=**全聚合**，joint.game=2×v8guard.game，`stat_report --rotate` 直接可用）。
+- **等价性 review 100% PASS（DoD）**：拿 arena 牌谱去各模型**独立/原版**推理代码逐决策点重放比对（v8guard=同事 sanma_joint_api 原版 / joint=独立原生加载）——默认实战 **6739 点 100% 一致 + select_fail=0**；宽松阈值压测 **6690 点 100%**（guard 换牌 440 / Q 保护 1565 / aka 保护 6 全覆盖）；helper 穷举对拍 **335449 组全等** ⇒ 接入零偏差。
+- gpu-16：arena3p 代码已 rsync；资产（3p-mse 121M + guard 包 26M，排除 gpu-16 已有的 v8_bc 97M）后台传输中 → 拼装/smoke/30k。详见 `specs/change-002-2v1-duplicate.md`、`sessions/c06.md`。
+
+### change-001（核心已完成，c02-c05）
 - 步骤 5 ✅ DONE（座位轮转复式大样本，c05）：gpu-16 跑 **joint/community/v8 × 4000 seed × 3 循环轮转 = 12000 半庄**（每模型每座正好 4000 局，座位效应彻底对消，94.5min @127 半庄/min）。**最终强弱**：joint(avg_rank 1.984/avg_pt +1.4) > v8(1.999/+0.1) > community(2.017/-1.5)，三者极接近；joint>community ~3σ 站得住，joint/v8/community 两两差距在噪声内。存 `eval_runs/rr_4k3/stat_rotate_12000.txt`。**全在 gpu-16 aigc 3.12 真环境**（见 CLAUDE.md 服务器环境铁律）。
 - 步骤 4 ✅ DONE（v8 同事模型，c04）：`libriichi_sanma.mjai.Bot(engine, seat)` 协议与 joint/community 同构；最小 `SanmaV8Engine`（react_batch / obs575 / mask44 / version3 / SanmaNet cfg.in_channels=575，**guard 关=不挂 danger head**）。.so py3.10 编但 **abi3 兼容**，conda mortal py3.12 直接 import（**无需 py3.10 venv**）。资产 fetch 到 `_pkgs/v8`（gitignore）。方言 = **standard**（实测训练 mjai：原生 3 座 + nukidora，同 joint）。**全链路 arena smoke 通过**：`v8,v8,v8` 自对战 + `v8,community,community` 混桌各跑半庄，scores 和守恒/ranks 合法。引擎层另有远端(py3.10)+本地(py3.12)双 smoke。
 - 步骤 2 ✅（community 适配器 + arena 框架，c03）：统一 MJAI 子进程 runner + 父进程引擎 + run_arena；`community×3` 自对战整局半庄跑通（scores 和守恒/ranks 正常，零静默兜底）。**闭合步骤1 第二 DoD**（事件流被 community libriichi 完整消费）。
@@ -27,7 +34,10 @@
 - `arena3p/collect_mjai_sample.py`、`arena3p/probe_mjai_dialect.py`、`arena3p/samples/*.jsonl`（步骤1 样例/探针）。
 - 构建产物：`.venv`（uv）+ 已 `maturin develop` 的 `riichienv._riichienv`（editable）。
 
-## 下一步（change-001 核心已完成；以下为可选收尾）
+## 下一步
+### change-002（进行中）
+1. gpu-16 资产传完 → 解压 sanma_v8_guard + 软链 `_pkgs/v8` 的 v8_bc → smoke 1-2 局 → nohup 跑 30k（`run_eval --players joint-mse,joint-mse,v8guard --rotate --n 10000 --resume`）→ `stat_report --rotate` 出 2v1 强弱。
+### change-001（核心已完成；可选收尾）
 1. （可选）牌谱可视化复核：`Mortal3/tools/joint_review` 看几局 rr_4k3 的 god-view 日志，定性确认对局合理。
 2. （可选）出一份正式强弱报告/图表；或扩大样本（--resume 可续）进一步收紧 joint/v8/community 的置信区间。
 
@@ -48,3 +58,4 @@
 - 2026-06-29 · c03 · change-001 步骤2+3：建统一 MJAI 子进程 arena 框架，接入 community（实测须 4 座 padding）+ joint-v2（原生 3 座），joint vs community 混桌真实对战跑通 = 「可以对战」。[详情](sessions/c03.md)
 - 2026-06-29 · c04 · 步骤4 v8 接入：探明 `libriichi_sanma.mjai.Bot`+react_batch 协议同构、.so abi3 可跑 py3.12、方言=standard；fetch 资产到 _pkgs/v8、写 build_v8_bot+registry，引擎远端&本地双 smoke 通过；arena 全链路候 10k 腾 RAM。[详情](sessions/c04.md)
 - 2026-06-30 · c05 · 步骤5 座位轮转复式：部署 gpu-16（aigc 3.12 真环境，踩 rust1.92坏toolchain/老pip--group 坑后定铁律入 CLAUDE.md），run_eval 加 --rotate+--resume，跑 joint/community/v8 12000 局复式得真实强弱 **joint>v8>community（极接近）**。[详情](sessions/c05.md)
+- 2026-06-30 · c06 · change-002 第二测试任务：2×joint-mse(3p-mse-v1.1) vs 1×v8guard(同事 guard 完整版) 接入（build_v8guard_bot 复刻 SanmaV8GuardEngine + joint 权重参数化 + 2v1 轮转 + review 工具）+ **等价性 review 100% PASS**（牌谱去两模型原版重放：6739 实战 + 6690 压测 + 335449 helper 全等）→ gpu-16 跑 30k。[详情](sessions/c06.md)

@@ -65,6 +65,32 @@ REGISTRY: dict[str, dict] = {
         "cwd": str(RIICHIENV_ROOT),
         "dialect": "standard",  # 实测训练 mjai：原生 3 座（scores/tehais 3 元）+ nukidora，与 joint 同
     },
+    # ---- change-002（第二测试任务：2×joint-mse vs 1×v8guard，轮转 30k）----
+    "joint-mse": {
+        # joint 引擎同 joint-v2（实测 3p-mse-v1.1 与 joint-v2 同构）；仅换权重路径。
+        "python": str(CONDA_MORTAL_PY),
+        "runner_args": ["--model", "joint"],
+        "env": _env({
+            "ARENA_JOINT_WEIGHT": str(MORTAL3 / "train" / "sl3p-joint-result" / "3p-mse-v1.1.pth"),
+            "MORTAL_CFG": str(MORTAL3 / "mortal" / "versions" / "sl3p-joint-v2" / "config.toml"),
+        }),
+        "cwd": str(RIICHIENV_ROOT),
+        "dialect": "standard",  # 原生 3 座，仅 kita↔nukidora
+    },
+    "v8guard": {
+        # 同事 sanma_v8_guard 完整包（v8 BC backbone + danger head + mitoshi 防守 guard，guard 开）。
+        # 资产在 Mortal3/train/sanma_v8_guard（44-action build：model/net.py 带 .features()/SanmaDangerHead）。
+        "python": str(CONDA_MORTAL_PY),
+        "runner_args": ["--model", "v8guard"],
+        "env": _env({
+            "ARENA_V8GUARD_DIR": str(MORTAL3 / "train" / "sanma_v8_guard"),
+            # danger head：默认 v8_danger（=同事 sanma_joint_api 钉死默认）；另有 v8_danger_suit4(更新)可选
+            "ARENA_V8_DANGER": str(MORTAL3 / "train" / "sanma_v8_guard"
+                                   / "runs" / "v8_danger" / "danger_head.pth"),
+        }),
+        "cwd": str(RIICHIENV_ROOT),
+        "dialect": "standard",  # 同 v8：原生 3 座 + nukidora
+    },
 }
 
 

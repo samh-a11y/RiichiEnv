@@ -89,10 +89,15 @@ def _play(seed):
 
 
 def _seatings(players, rotate):
-    """rotate：3 个循环轮转 [(rot, seating), ...]；否则单一固定座次（rot=None）。"""
+    """rotate：3 个循环轮转 [(rot, seating), ...]；否则单一固定座次（rot=None）。
+
+    支持 2v1 复式（[a,a,b]）：循环旋转 players[r:]+players[:r] 得 [a,a,b]/[a,b,a]/[b,a,a]，
+    单一模型 b 轮坐每座各 1 次、a 占其余 2 座（每座各 2 次）→ 座位完全平衡、座位运气对消。
+    """
     if not rotate:
         return [(None, list(players))]
-    assert len(set(players)) == 3, f"--rotate 需 3 个不同模型，给的是 {players}"
+    assert len(players) == 3, players
+    assert len(set(players)) >= 2, f"--rotate 需 ≥2 个不同模型（否则轮转无意义），给的是 {players}"
     return [(r, players[r:] + players[:r]) for r in range(3)]
 
 
