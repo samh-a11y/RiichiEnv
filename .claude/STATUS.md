@@ -3,12 +3,12 @@
 > 维护约定：本文件只放「当前状态 / 产物 / 下一步 / 待决」这类会变的事实。
 > 会话日志只做索引：每个 session 一行（日期 + 一句话 + 链接），详情写进 `sessions/cNN.md`。
 
-## 当前阶段（2026-06-30）：change-001 核心完成；**change-002（第二测试任务）接入 + 等价性验证 100% PASS → gpu-16 跑 30k 中**
+## 当前阶段（2026-06-30）：change-001 核心完成；**change-002（第二测试任务）✅ 全部完成 — 2×joint-mse vs 1×v8guard 30k 出强弱**
 
-### change-002（c06）：2×joint-mse vs 1×v8guard 座位轮转复式 30k
-- joint 换在线训练 `3p-mse-v1.1`（实测 ≡joint-v2 同构，仅换权重路径）；v8 换**带 guard** 的 `sanma_v8_guard`（v8 BC backbone + danger head + mitoshi 防守 guard；c04 接的是 guard 关的 v8_bc）；**2v1 复式**（`run_eval._seatings` 放宽；Stat 同名多座实测=**全聚合**，joint.game=2×v8guard.game，`stat_report --rotate` 直接可用）。
-- **等价性 review 100% PASS（DoD）**：拿 arena 牌谱去各模型**独立/原版**推理代码逐决策点重放比对（v8guard=同事 sanma_joint_api 原版 / joint=独立原生加载）——默认实战 **6739 点 100% 一致 + select_fail=0**；宽松阈值压测 **6690 点 100%**（guard 换牌 440 / Q 保护 1565 / aka 保护 6 全覆盖）；helper 穷举对拍 **335449 组全等** ⇒ 接入零偏差。
-- gpu-16：arena3p 代码已 rsync；资产（3p-mse 121M + guard 包 26M，排除 gpu-16 已有的 v8_bc 97M）后台传输中 → 拼装/smoke/30k。详见 `specs/change-002-2v1-duplicate.md`、`sessions/c06.md`。
+### change-002（c06）：2×joint-mse vs 1×v8guard 座位轮转复式 30k ✅ DONE
+- joint 换在线训练 `3p-mse-v1.1`（实测 ≡joint-v2 同构，仅换权重路径）；v8 换**带 guard** 的 `sanma_v8_guard`（v8 BC backbone + danger head + mitoshi 防守 guard；c04 接的是 guard 关的 v8_bc）；**2v1 复式**（`run_eval._seatings` 放宽；Stat 同名多座=全聚合，joint.game=2×v8guard.game）。
+- **等价性 review 100% PASS（DoD）**：arena 牌谱去各模型**独立/原版**推理代码逐决策点重放——默认实战 **6739 点 100%+select_fail=0**；宽松压测 **6690 点 100%**（guard 换牌440/Q保护1565/aka保护6 全覆盖）；helper 穷举 **335449 组全等**。gpu-16↔本机 20 局 god-view 牌谱 md5 全同（闭合 aigc 无 fastapi 跑不了 truth 重放的缺口）。
+- **30000 半庄跑完（gpu-16, 157.6min @190/min）→ 最终强弱**：**avg_rank 实质平手**（joint 1.9998±.003 / v8guard 2.0003±.005，差 0.0005 << 噪声）；avg_pt v8guard +0.288(~2σ) / joint −0.162（v8guard 点数微弱占优，弱信号）。**风格**：v8guard 激进（立直27.4%/和率29.2%/放铳15.4%/1st·3rd双高=波动大），joint 稳健（放铳13.8%最低/2nd34.1%最多/立直后和率53.0%高）。延续 change-001「joint 稳·v8 凶·极接近」格局。存 gpu-16 `eval_runs/c002_2v1_30k/stat_2v1_30k.txt`。详见 `specs/change-002-2v1-duplicate.md`、`sessions/c06.md`。
 
 ### change-001（核心已完成，c02-c05）
 - 步骤 5 ✅ DONE（座位轮转复式大样本，c05）：gpu-16 跑 **joint/community/v8 × 4000 seed × 3 循环轮转 = 12000 半庄**（每模型每座正好 4000 局，座位效应彻底对消，94.5min @127 半庄/min）。**最终强弱**：joint(avg_rank 1.984/avg_pt +1.4) > v8(1.999/+0.1) > community(2.017/-1.5)，三者极接近；joint>community ~3σ 站得住，joint/v8/community 两两差距在噪声内。存 `eval_runs/rr_4k3/stat_rotate_12000.txt`。**全在 gpu-16 aigc 3.12 真环境**（见 CLAUDE.md 服务器环境铁律）。
