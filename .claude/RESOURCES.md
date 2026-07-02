@@ -15,7 +15,7 @@
 ## B. 三个被测模型
 
 ### B1. v8（同事 gpuo 服务器，最重的一项）
-- 机器：`ssh gpuo` = root@`p-0cc7s1smel9wrd2g0`，无影 vGPU RTX5880-Ada-48Q，CUDA12.8，venv `/root/sanma/.venv`(py3.10)。
+- 机器：`ssh gpuo`（同事的机器，规格/venv 见 `~/.claude/machine.md`）。
 - 引擎：`/root/sanma/engine/libriichi-sanma`（pkg `libriichi-sanma`，`[lib] name=libriichi_sanma`，pyo3+numpy0.25），产物 `engine/libriichi-sanma/target/release/liblibriichi_sanma.so`。obs `version==3` rich 575ch×34，**action space 44**（v8 扩的）。
 - 权重：`/root/sanma/runs/v8_bc/model.pth`（101MB；`latest.pth`=304MB 含 optimizer）。net=`model/net.py::SanmaNet`(ch384/blk24/in575, 25.31M params)。
 - 推理代码：`/root/sanma/eval/agent_v8_guard.py`（含 guard，可关）、`model/net.py`、`features/`(consts.py/encode.py)。
@@ -77,6 +77,5 @@
 |---|---|
 | RiichiEnv 构建 venv | `riichienv/.venv`（uv，py3.10+，需 Rust） |
 | 本机 torch | `~/miniconda3/envs/mortal/bin/python`(py3.10) |
-| gpu-16 torch（joint 训练机） | `~/aigc_apps/venv/bin/python` |
-| v8 远端 | `ssh gpuo` → `/root/sanma`，venv `.venv` |
+| GPU 机（gpu-16=训练机 / gpuo=v8 同事机） | 规格/venv/开关机见 `~/.claude/machine.md` |
 | 三模型权重 | 见 B1/B2/B3（均百 MB，勿入 git） |
