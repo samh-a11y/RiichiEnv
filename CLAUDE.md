@@ -5,7 +5,7 @@
 ## 这是什么项目
 - 上游：[smly/RiichiEnv](https://github.com/smly/riichienv)，Rust(`riichienv-core`) + Python(maturin) 的高性能麻将环境，**Gym 式 API + 原生支持三麻(sanma) + MJAI 协议 + Mortal Bot 兼容**（README 称已在 100 万+ 半庄无错跑通 MortalAgent）。本仓库是其本地克隆（`git clone` 于 2026-06-29，HEAD `b1d08b3`）。
 - **本项目不改上游引擎**。我们把 RiichiEnv 当作**中立的三麻公共对战器**，把三个来自不同工程、互不相通的 Mortal 系三麻模型接进来，做一次真正 apples-to-apples 的三人对战评测。
-- **姊妹项目**：`../Mortal3`（本项目的母项目，把 Mortal 改三麻 + 训练）、`../Mortal`（4p 复刻）。三个 repo 同在 `~/Workspace.code-workspace` / `~/Workspace-side.code-workspace`。
+- **姊妹项目**：母项目是 Mortal3（把 Mortal 改三麻 + 训练），再往上是 Mortal（4p 复刻）；三个 repo 同在 `~/Workspace.code-workspace` / `~/Workspace-side.code-workspace`。完整姊妹项目地图见 `~/.claude/CLAUDE.md`。
 
 ## 🎯 核心任务（change-001）
 把下面**三个三麻模型**接入 RiichiEnv 对战器，跑三人 sanma 半庄循环赛，得出三者真实强度关系：
