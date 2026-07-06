@@ -21,12 +21,15 @@ HOME = pathlib.Path.home()
 MORTAL = pathlib.Path(os.environ.get("ARENA_MORTAL_ROOT", HOME / "Mortal")).resolve()
 
 
-def build_mortal_bot(seat: int):
+def build_mortal_factory():
     """复刻 ~/Mortal/mortal/mortal.py 的标准分支加载（46 动作 .so 匹配 ckpt）。
 
     权重 = ARENA_MORTAL_WEIGHT 或 config['control']['state_file']（MORTAL_CFG 指
     的 config.toml）。joint(83) ckpt 请直接用 mortal.py 的 Tier-A 适配器路径，
     本 runner 不复刻。
+
+    返回 make(seat)->Bot 工厂：模型/engine 只加载一次，跨半庄换座只重建
+    轻量 Bot（arena 提速件：子进程复用，start_game 携 id 换座）。
     """
     sys.path.insert(0, str(MORTAL / "mortal"))
     import torch
@@ -70,10 +73,14 @@ def build_mortal_bot(seat: int):
         enable_amp=False, enable_quick_eval=True,
         enable_rule_based_agari_guard=True, name="mortal",
     )
-    return Bot(engine, seat)
+
+    def make(seat: int):
+        return Bot(engine, seat)
+
+    return make
 
 
-BUILDERS = {"mortal": build_mortal_bot}
+BUILDERS = {"mortal": build_mortal_factory}
 
 
 def main():
@@ -82,7 +89,8 @@ def main():
     ap.add_argument("--seat", type=int, required=True)
     args = ap.parse_args()
 
-    bot = BUILDERS[args.model](args.seat)
+    make = BUILDERS[args.model]()
+    bot = make(args.seat)
     print('{"type":"ready"}', flush=True)
     for line in sys.stdin:
         line = line.strip()
@@ -91,6 +99,8 @@ def main():
         events = json.loads(line)
         last = None
         for ev in events:
+            if ev.get("type") == "start_game":
+                bot = make(int(ev.get("id", args.seat)))
             if r := bot.react(json.dumps(ev)):
                 last = r
         out = json.loads(last) if last is not None else {"type": "none"}

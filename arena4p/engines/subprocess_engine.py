@@ -56,8 +56,16 @@ class SubprocessMjaiEngine(MjaiEngine):
             raise RuntimeError(
                 f"engine {self.model_name}:{self.seat} 首行非 ready：{line!r}")
 
+    def set_seat(self, seat: int):
+        """跨半庄复用：本局此引擎坐 seat（start_game 转发时补 id 通知 runner 换座）。"""
+        self.seat = seat
+
     def act(self, obs):
         events = [json.loads(e) for e in obs.new_events()]
+        for ev in events:
+            # riichienv 的 start_game 不带 id；runner 靠它得知本局座位并重建 bot
+            if ev.get("type") == "start_game":
+                ev["id"] = self.seat
         self.proc.stdin.write(json.dumps(events, separators=(",", ":")) + "\n")
         self.proc.stdin.flush()
 
