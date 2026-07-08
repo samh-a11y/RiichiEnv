@@ -30,7 +30,10 @@ class SubprocessMjaiEngine(MjaiEngine):
         spec = registry.get_spec(model_name)
         # 按模型选 env→model 事件改写器（community 需 3→4 座 padding；joint 仅 kita→nukidora）
         self._to_model = dialect.DIALECTS[spec["dialect"]]
-        cmd = [
+        # qgrp change-004：带 "argv" 工厂的 spec（先例 arena4p）自带协议入口，
+        # 直接用工厂命令行；既有 python+runner_args spec 走原 mjai_runner 路径不变
+        argv = spec.get("argv")
+        cmd = argv(seat) if argv is not None else [
             spec["python"], "-m", "arena3p.engines.mjai_runner",
             *spec["runner_args"], "--seat", str(seat),
         ]

@@ -91,6 +91,39 @@ REGISTRY: dict[str, dict] = {
         "cwd": str(RIICHIENV_ROOT),
         "dialect": "standard",  # 同 v8：原生 3 座 + nukidora
     },
+    # ---- qgrp change-004（三麻 QGRP 打牌器：qgrp 仓 bot3p/，自带 ready+数组协议）----
+    "qgrp3p": {
+        # argv 工厂 spec（先例 = arena4p registry 的 qgrp）：不走 mjai_runner，
+        # 直接起 bot3p.run_stdio（协议同 mjai_runner 对外契约：ready 握手 +
+        # 每行事件数组入 / 一条动作出）。subprocess_engine 对带 "argv" 的 spec
+        # 用工厂产出的命令行；路径/ckpt 全部可 env 覆盖（gpu16b: /root 布局）。
+        "argv": lambda seat: [
+            os.environ.get("ARENA_QGRP3P_PY") or str(CONDA_MORTAL_PY),
+            "-m", "bot3p.run_stdio", "--player-id", str(seat),
+            "--qgrp-ckpt", os.environ.get(
+                "QGRP3P_CKPT", str(HOME / "qgrp3p_run" / "qgrp3p_full.pth")),
+            "--trans-ckpt", os.environ.get(
+                "QGRP3P_TRANS", str(HOME / "zeroppo-grp" / "grp_trans3p_v1.pth")),
+            "--transcore-repo", os.environ.get(
+                "QGRP3P_TRANSCORE_REPO", str(HOME / "zeroppo-grp")),
+            "--device", os.environ.get(
+                "QGRP3P_DEVICE", os.environ.get("ARENA_DEVICE", "cpu")),
+            *(os.environ.get("ARENA_QGRP3P_EXTRA", "").split() or []),
+        ],
+        # libriichi3p.so（Mortal3/mortal，joint 81 动作）+ qgrp 仓根（bot3p 包）；
+        # _env 会以 extra 覆盖默认 PYTHONPATH，这里显式拼上原 env 的值
+        "env": _env({
+            "PYTHONPATH": os.pathsep.join([
+                str(MORTAL3 / "mortal"),
+                str(pathlib.Path(os.environ.get("ARENA_QGRP_ROOT",
+                                                HOME / "qgrp")).resolve()),
+                os.environ.get("PYTHONPATH", ""),
+            ]).rstrip(os.pathsep),
+        }),
+        "cwd": str(pathlib.Path(os.environ.get("ARENA_QGRP_ROOT",
+                                               HOME / "qgrp")).resolve()),
+        "dialect": "standard",  # 原生 3 座，仅 kita↔nukidora（同 joint/v8）
+    },
 }
 
 
