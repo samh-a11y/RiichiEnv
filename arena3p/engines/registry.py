@@ -124,6 +124,31 @@ REGISTRY: dict[str, dict] = {
                                                HOME / "qgrp")).resolve()),
         "dialect": "standard",  # 原生 3 座，仅 kita↔nukidora（同 joint/v8）
     },
+    # ---- qgrp design-005（三麻 BC 打牌器：qgrp 仓 bc3p/，token Transformer 直接
+    #      策略头，无 EV 机器，故不需 trans/transcore；协议同 qgrp3p）----
+    "bc3p": {
+        "argv": lambda seat: [
+            os.environ.get("ARENA_BC3P_PY") or str(CONDA_MORTAL_PY),
+            "-m", "bc3p.run_stdio", "--player-id", str(seat),
+            "--bc-ckpt", os.environ.get(
+                "BC3P_CKPT", str(HOME / "bc3p_run" / "bc3p_d192x6.pth.last")),
+            "--device", os.environ.get(
+                "BC3P_DEVICE", os.environ.get("ARENA_DEVICE", "cpu")),
+            *(os.environ.get("ARENA_BC3P_EXTRA", "").split() or []),
+        ],
+        # libriichi3p.so（Mortal3/mortal，joint 81 动作）+ qgrp 仓根（bc3p/bot3p 包）
+        "env": _env({
+            "PYTHONPATH": os.pathsep.join([
+                str(MORTAL3 / "mortal"),
+                str(pathlib.Path(os.environ.get("ARENA_QGRP_ROOT",
+                                                HOME / "qgrp")).resolve()),
+                os.environ.get("PYTHONPATH", ""),
+            ]).rstrip(os.pathsep),
+        }),
+        "cwd": str(pathlib.Path(os.environ.get("ARENA_QGRP_ROOT",
+                                               HOME / "qgrp")).resolve()),
+        "dialect": "standard",  # 原生 3 座，仅 kita↔nukidora（同 joint/v8/qgrp3p）
+    },
 }
 
 
