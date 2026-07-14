@@ -63,6 +63,40 @@ cd ~/riichienv && bash online3p/live_stop.sh --force  # 立即强杀（不等当
 - 旋钮：`--coop-dir`（默认 `/tmp/riichi_coop`）、`--teammates Nosam,Mason`、`--coop-wait-sec`（首局轮询上限）、
   `--coop-w-self/--coop-w-third`（默认 0.5/0.5）。
 
+## pt 目标函数（打牌倾向调参）
+bot 最大化的是 **pt EV**（引擎 `../qgrp/bot3p/ev.py::EvCalc3P`，参数在 `bot3p/config.py::BotConfig3P`）：
+```
+EV(动作) = Σ_leaf w_leaf · [ Σ_r P(名次=r|leaf)·rank_pts[r]   ← 名次项（“pt 分布”）
+                             + pt_per_1000·Δ素点_self/1000       ← 素点价值项
+                             + bonus(leaf) ]                       ← 自摸/役满/流満 加成
+```
+`w_leaf`、`P(名次|leaf)` 由 GRP 模型（`grp_trans3p_v1`：续局叶 f̂ 名次边缘 / 终局叶硬排位）给出，
+**非配置项**——要改「模型对名次概率的估计」得换 `--trans-ckpt` / 重训 GRP。可拨的旋钮（`BotConfig3P` 字段）：
+
+| 字段 | 默认 | 含义 |
+|---|---|---|
+| `rank_pts` | `(90, 0, -90)` | **pt 分布**：1/2/3 位各值多少 pt（bot 最终最大化的名次期望）|
+| `pt_per_1000` | `0.0` | **素点价值**：每 1000 素点折多少 pt（`0`＝纯名次 / 天凤口径）|
+| `tsumo_bonus_pt` / `yakuman_bonus_pt` / `nagashi_bonus_pt` | `0` | 自己 自摸 / 役满 / 流し満貫 和了加成 |
+
+**调参语义（别踩坑）**：
+- `rank_pts` **只有差值有意义**（整体加常数不改选择）。`1位−2位` 差＝拼一位的动机，`2位−3位` 差＝防三的
+  动机；默认 `(90,0,-90)` 对称。**防三优先** → 3 位更负如 `(90,10,-100)`；**拼一位** → 拉大 1-2 差如 `(120,-10,-110)`。
+- `pt_per_1000` **尺度警告**：`rank_pts` 量级 ~90，一庄素点摆动常 ±20~40k，故 `=1` 就等于给素点 ±20~40 pt 的
+  直接权重、与名次同量级。想「略贪点」给 **0.1~0.5**；只有素点排名赛才给到 ~1 让素点主导。
+
+**在哪设**：
+- **standalone bot（`../qgrp/bot3p/run_stdio.py`）已有 CLI**：`--rank-pts 90,10,-100`、`--pt-per-1000 0.3`、
+  `--tsumo-bonus-pt`、`--yakuman-bonus-pt`、`--nagashi-bonus-pt`。
+- **本客户端（`client.py` / `live_start.sh`）目前只吃默认值**——`_build_engine` 造 `BotConfig3P` 只传
+  ckpt/trans/repo/device/name，pt 字段全走默认 `(90,0,-90)`/`0.0`。**要调真机 ranked bot**：改
+  `../qgrp/bot3p/config.py` 里 `BotConfig3P` 的默认值（`live_stop`→`live_start` 重启生效），或把上述 CLI
+  接进 online3p（`ClientConfig`+argparse+`_build_engine` 传参+`live_start.sh`，尚未做，需要时再加）。
+- ⚠ 与协作权重 `--coop-w-self/--coop-w-third`（上一节）是**两组独立**旋钮：前者调「名次 vs 素点」的口径，
+  后者调「自己 vs 压第三家」的协作强度。
+- ⚠ 另与 arena **评测报告**口径 `REPORT_PTS`（`arena3p/stat_report.py` 的 avg_pt 顺位点 + 单列素点）是两码事：
+  一个是给对局打分的评委，一个是 bot 自己的目标函数。
+
 ## 文件
 - `client.py` —— riichi.dev 在线客户端（**上线入口**）。
 - `coop_detect.py` —— 侧信道同桌检测（共享目录指纹互认）。
