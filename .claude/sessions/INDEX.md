@@ -20,3 +20,5 @@
 | 双 bot 协作 EV（同桌 0.5·self−0.5·third；qgrp ev.py set_coop） | c07（数值 max\|err\|=0 + mock coop ON/OFF 两分支） |
 | 在线对战环境坑（aigc venv riichienv 空 namespace，真 riichienv 在仓 .venv） | c07 |
 | 真机 ankan 兜底误判非法回退（服务器合法集带冗余 pai / `_match` 镜像 select_action） | c08（`_match` ankan/kita 只比 consumed + `test_action_match.py`） |
+| 红5「模型不认识」（possible_actions 折叠手牌红5→`5p`，服务器仍收 `5pr`；`_deaka` 归一化 dahai） | c08（实现 `_deaka`）；c09（真机探针坐实折叠+服务器照收 `5pr` + 带修复重启上线） |
+| level/aggr 剥削旋钮 / end_game 立即重排 / 原始帧诊断（RIICHI_RAW） | c08 |

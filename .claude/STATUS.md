@@ -3,7 +3,7 @@
 > 维护约定：本文件只放「当前状态 / 产物 / 下一步 / 待决」这类会变的事实。
 > 会话日志只做索引：每个 session 一行（日期 + 一句话 + 链接），详情写进 `sessions/cNN.md`。
 
-## 当前阶段（2026-07-14）：**change-003 qgrp v3 接入 riichi.dev 在线三麻——已本机 4070 ranked 上线 + coop 默认开；c08 一批真机修复+旋钮（ankan 误判 / 红5 / 立即重排 / level·aggr 剥削旋钮），全部待 live 重启生效**
+## 当前阶段（2026-07-14）：**change-003 qgrp v3 接入 riichi.dev 在线三麻——已本机 4070 ranked 上线 + coop 默认开；c08 一批真机修复+旋钮（ankan 误判 / 红5 / 立即重排 / level·aggr 剥削旋钮）已 c09 真机验证 + 优雅重启生效、两 bot 在 ranked 跑**
 
 ### change-003（c07/c08）：qgrp v3 接入 riichi.dev 在线三麻对战 ✅ 真机验证通过，✅ ranked 上线，🐛🔧 c08 一批真机修复+旋钮
 - **🐛 c08 ankan 兜底误判修复**：`_sanitize` 每次把合法 **ankan 误判非法回退打牌**（少一番/宝牌指示牌不翻）。根因：服务器合法集 ankan 带**冗余 `pai`**（`legal_actions` `tile=Some`→`to_mjai` 插 pai），bot/标准 mjai 不带 pai，旧 `_match` 比 pai 恒不中；服务器收无 pai ankan 按 consumed 接受（`mjai_select.rs` pai 二次校验仅 chi/pon/daiminkan/kakan）⇒ 纯客户端 bug。修：`_match` 镜像服务器——ankan/kita 只比 consumed（`319dcf5`）。
@@ -51,7 +51,7 @@
 
 ## 下一步
 ### change-003（本机 4070 已部署上线 + coop 默认开）
-0. **🐛🔧 c08 一批改动需重启生效**：`bash online3p/live_stop.sh`（优雅停，打完当前局）→ `bash online3p/live_start.sh` 让 live 进程重载 `client.py`。覆盖：ankan 误判修复 + 红5修复 + end_game 立即重排 + level/aggr 可调。重启后关注日志 `WARN 动作不在合法集` 消失（暗杠/红5 正常）、`引擎就绪 … level=8.0 aggr=12.0（剥削旋钮）`。想调剥削旋钮：`LEVEL=7.5 AGGR=13 bash online3p/live_start.sh`。
+0. ✅ **c08 一批改动已 c09 优雅重启生效**（打完当前局才停、不掉 rating → `live_start.sh` 重载）：ankan 修复 + 红5修复 + end_game 立即重排 + level/aggr 均在跑的代码里。启动日志确认 `引擎就绪 … level=8.0 aggr=12.0（剥削旋钮）`。**红5修复真机口径已坐实**（c09：探针实测 `possible_actions` 折叠手牌红5→`5p`，但服务器照收 `5pr`＝`action_ack accepted`；带修复重跑 validate `passed`、零 WARN、bot 正确发 `5pr`）。想调剥削旋钮：`LEVEL=7.5 AGGR=13 bash online3p/live_start.sh`。
 1. **运维**：本机 `bash online3p/live_start.sh` 起 / `bash online3p/live_stop.sh` 优雅停（打完当前对局、同停）/ `--force` 强停。日志 `online3p/_live/{Nosam,Mason}.log`。⚠ 别在 gpu16b 同时跑（同 token 双连冲突）。
 2. **持续观察**：同桌局 `[coop ON] third_seat=N`；关注 rating、有无 chombo/掉线、协作效果（第三家是否被压制）。
 3. ✅ **真机同桌"两 bot 均 coop ON"已 live 确认**（捕到一局：Nosam 座0/Mason 座1 均 third_seat=2、指纹一致；竞态修复现场生效——Nosam 首局漏后 E2 重查命中）。全链路真机闭合。push 前先问用户（本会话已 commit 未 push）。
@@ -81,3 +81,4 @@
 - 2026-06-30 · c06 · change-002 第二测试任务：2×joint-mse(3p-mse-v1.1) vs 1×v8guard(同事 guard 完整版) 接入（build_v8guard_bot 复刻 SanmaV8GuardEngine + joint 权重参数化 + 2v1 轮转 + review 工具）+ **等价性 review 100% PASS**（牌谱去两模型原版重放：6739 实战 + 6690 压测 + 335449 helper 全等）→ gpu-16 跑 30k。[详情](sessions/c06.md)
 - 2026-07-14 · c07 · change-003 qgrp v3 接入 **riichi.dev** 在线三麻：探针实测真实协议（单帧 mjai + request_action/request_id + 无玩家身份）→ 重写 `online3p/client.py`（纯 MJAI 桥、aigc venv、possible_actions 防 chombo）+ qgrp `ev.py::set_coop`；**Nosam/Mason 真机 `/ws/validate` 均 passed**；协作触发受限于平台无身份/game_id（需侧信道，待用户定）。[详情](sessions/c07.md)
 - 2026-07-14 · c08 · 真机 ranked 一批修复+旋钮：**ankan 兜底误判**（服务器合法集带冗余 pai，`_match` 镜像 `select_action` 只比 consumed）+ **红5 aka**（possible_actions 折叠红5→`_deaka` 归一化）+ **end_game 立即重排**（reconnect_sec 0，异常退避）+ **level/aggr 剥削旋钮接入 CLI**（`--level/--aggr`+env 透传）+ pt 调参文档；`test_action_match.py` 13/13 PASS。⚠ 全待 live 重启生效。[详情](sessions/c08.md)
+- 2026-07-14 · c09 · 红5「模型不认识」用户报障：独立复诊到与 c08 同一根因，**用真机探针把关键前提坐实**（事件流带 `5pr` ⇒ 输入没问题；`possible_actions` 把手牌红5折叠成 `5p`；服务器实测照收 `5pr`＝`accepted`）；带修复重跑 validate `passed`/零 WARN/bot 正确发 `5pr`；**优雅停机→重启让 c08 一批改动上线生效**（两 bot 在 ranked）。[详情](sessions/c09.md)
