@@ -48,7 +48,7 @@
 ### change-003（本机 4070 已部署上线 + coop 默认开）
 1. **运维**：本机 `bash online3p/live_start.sh` 起 / `bash online3p/live_stop.sh` 优雅停（打完当前对局、同停）/ `--force` 强停。日志 `online3p/_live/{Nosam,Mason}.log`。⚠ 别在 gpu16b 同时跑（同 token 双连冲突）。
 2. **持续观察**：同桌局 `[coop ON] third_seat=N`；关注 rating、有无 chombo/掉线、协作效果（第三家是否被压制）。
-3. **待收尾**：真机同桌"两 bot 均 coop ON"live 确认（后台监控 b8betwvgm 捕中即闭合竞态修复）；push 前先问用户（本会话已 commit 未 push）。
+3. ✅ **真机同桌"两 bot 均 coop ON"已 live 确认**（捕到一局：Nosam 座0/Mason 座1 均 third_seat=2、指纹一致；竞态修复现场生效——Nosam 首局漏后 E2 重查命中）。全链路真机闭合。push 前先问用户（本会话已 commit 未 push）。
 ### change-002（✅ 完成）
 1. gpu-16 资产传完 → 解压 sanma_v8_guard + 软链 `_pkgs/v8` 的 v8_bc → smoke 1-2 局 → nohup 跑 30k（`run_eval --players joint-mse,joint-mse,v8guard --rotate --n 10000 --resume`）→ `stat_report --rotate` 出 2v1 强弱。
 ### change-001（核心已完成；可选收尾）
