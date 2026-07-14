@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import os
 import pathlib
@@ -63,6 +64,20 @@ def _dialect_out(act: dict, nukidora_out: str) -> dict:
     return act
 
 
+# 红宝牌 aka 归一化：riichi.dev 的 `possible_actions` **把红5折叠成普通5**（红5筒显示为
+# 5p、红5索显示为 5s，实测同一局合法集里红/非红 5p 都写 "5p"），但服务器真正的校验器
+# (riichienv-core mjai_select.rs::select_action) 按 `tid_to_mjai(tile)` 是 **aka 敏感**的、
+# 照收 5pr/5sr（validate 实测发 5pr/5sr → action_ack=accepted）。⇒ `_match` 比对 pai/
+# consumed 时按普通5归一化即可命中合法集，命中后 `_sanitize` **原样发 bot 的 5pr**——
+# 服务器自行区分红/非红。不做归一化则 bot 想切/摸切红5时被误判非法、回退成别的牌
+# （表现＝"模型不认识红5"）。只影响 5m/5p/5s，其余牌名恒等。三麻实际只有 5pr/5sr。
+_AKA2PLAIN = {"5mr": "5m", "5pr": "5p", "5sr": "5s"}
+
+
+def _deaka(pai):
+    return _AKA2PLAIN.get(pai, pai) if isinstance(pai, str) else pai
+
+
 @dataclass
 class ClientConfig:
     url: str
@@ -74,6 +89,10 @@ class ClientConfig:
     device: str
     coop_w_self: float = 0.5
     coop_w_third: float = 0.5
+    # 剥削旋钮（aux 水平/激进度条件，train-003 §2；三家同值＝告诉模型对手 profile，模型
+    # 针对性调整打法）。None＝用 BotConfig3P 默认（自产谱口径 level=8.0/aggr=12.0）。
+    level: float | None = None
+    aggr: float | None = None
     nukidora_out: str = "kita"
     reconnect: bool = True
     reconnect_sec: float = 0.0        # 正常 end_game 后重连（重新排队）延迟——默认 0=立即
@@ -109,7 +128,37 @@ class OnlineMjaiClient:
         # 优雅停机：收到信号/停机文件后，打完当前对局才退（不中断进行中对局）
         self._stop = False
         self._in_game = False
+        # 只读诊断：RIICHI_RAW_LOG=<path> 时把每一帧原始 recv/send 落盘（含 request_action
+        # 里 base64 observation 的解码），用于核对平台真实线格式（如红5=5pr 还是 5p）。
+        # **不改任何决策/匹配逻辑**；默认关（env 未设即完全 no-op）。
+        self._raw_path = os.environ.get("RIICHI_RAW_LOG") or None
+        self._raw_n = 0
         self._build_engine()
+
+    def _raw(self, direction: str, frame) -> None:
+        """把一帧原样落盘（诊断用）；request_action 的 base64 observation 解码后并记。
+        绝不抛出（异常吞掉），绝不影响对局主循环。"""
+        if not self._raw_path:
+            return
+        try:
+            rec = {"n": self._raw_n, "dir": direction, "seat": self.my_seat,
+                   "frame": frame}
+            if isinstance(frame, dict) and frame.get("type") == "request_action":
+                obs_b64 = frame.get("observation")
+                if isinstance(obs_b64, str):
+                    rec = dict(rec)
+                    f2 = dict(frame)
+                    try:
+                        f2["observation"] = json.loads(base64.b64decode(obs_b64))
+                    except Exception:  # noqa: BLE001
+                        f2["observation"] = f"<b64 decode failed len={len(obs_b64)}>"
+                    rec["frame"] = f2
+            with open(self._raw_path, "a", encoding="utf-8") as fp:
+                fp.write(json.dumps(rec, ensure_ascii=False,
+                                    separators=(",", ":")) + "\n")
+            self._raw_n += 1
+        except Exception:  # noqa: BLE001
+            pass
 
     def _request_stop(self) -> None:
         if not self._stop:
@@ -136,12 +185,19 @@ class OnlineMjaiClient:
                 "import bot3p 失败——PYTHONPATH 需含 qgrp 仓根 + Mortal3/mortal。\n"
                 f"  详细：{e}")
         self._QgrpBot3P = QgrpBot3P
-        self.bot_cfg = BotConfig3P(
+        cfg_kw = dict(
             qgrp_ckpt=self.cfg.qgrp_ckpt, trans_ckpt=self.cfg.trans_ckpt,
             transcore_repo=self.cfg.transcore_repo, device=self.cfg.device,
             name=self.cfg.my_name)
+        # 未指定＝走 BotConfig3P 默认（单一真源，不在此硬编码 8.0/12.0）
+        if self.cfg.level is not None:
+            cfg_kw["level"] = self.cfg.level
+        if self.cfg.aggr is not None:
+            cfg_kw["aggr"] = self.cfg.aggr
+        self.bot_cfg = BotConfig3P(**cfg_kw)
         self.evcalc = EvCalc3P(self.bot_cfg)   # 模型 + trans_core 只载一次
-        self.log(f"引擎就绪 ckpt={self.cfg.qgrp_ckpt} device={self.cfg.device}")
+        self.log(f"引擎就绪 ckpt={self.cfg.qgrp_ckpt} device={self.cfg.device} "
+                 f"level={self.bot_cfg.level} aggr={self.bot_cfg.aggr}（剥削旋钮）")
 
     # ── 开局：定座位 + 重建 bot（协作在 start_kyoku 判定）─────────
     def _on_start_game(self, ev: dict) -> None:
@@ -224,7 +280,12 @@ class OnlineMjaiClient:
             return False
         t = act.get("type")
         if t == "dahai":
-            return p.get("pai") == act.get("pai")
+            # aka 归一化（仅 dahai，已 validate 实测证据确凿）：possible_actions 把红5折叠成
+            # 普通5（同一局合法集里红5筒/非红5筒都写 "5p"），但服务器校验器 aka 敏感、照收
+            # 5pr/5sr（实测发 5pr/5sr→action_ack=accepted）。归一化命中后 _sanitize 原样发
+            # bot 的 5pr，服务器自行区分红/非红。不归一化则 bot 切/摸切红5被误判非法→回退成
+            # 别的牌（＝用户报的"模型不认识红5"）。melds 未观察到折叠、保持严格（下方）。
+            return _deaka(p.get("pai")) == _deaka(act.get("pai"))
         if t in ("pon", "chi", "daiminkan", "kakan", "ankan", "kan", "kita"):
             # consumed 唯一确定一次副露（含 aka）——服务器按 consumed 匹配。
             if sorted(p.get("consumed", [])) != sorted(act.get("consumed", [])):
@@ -308,8 +369,10 @@ class OnlineMjaiClient:
                 for f in frames:
                     if not isinstance(f, dict):
                         continue
+                    self._raw("recv", f)
                     out, control = self.handle_frame(f)
                     if out is not None:
+                        self._raw("send", json.loads(out))
                         await ws.send(out)
                     if control in _TERMINAL:
                         # 本局打完；若已请求停机则不再重连
@@ -361,6 +424,11 @@ def build_config(argv=None) -> ClientConfig:
     ap.add_argument("--transcore-repo", default=os.environ.get(
         "QGRP3P_TRANSCORE_REPO", "/root/zeroppo-grp"))
     ap.add_argument("--device", default=os.environ.get("QGRP3P_DEVICE", "cuda"))
+    # 剥削旋钮（aux 水平/激进度条件；三家同值＝对手 profile）。默认不覆盖＝BotConfig3P 默认 8.0/12.0
+    ap.add_argument("--level", type=float, default=None,
+                    help="aux 水平条件（剥削旋钮，train-003 §2；不给=默认 8.0=自产谱口径）")
+    ap.add_argument("--aggr", type=float, default=None,
+                    help="aux 激进度条件（同 --level；不给=默认 12.0）")
     ap.add_argument("--coop-w-self", type=float, default=0.5)
     ap.add_argument("--coop-w-third", type=float, default=0.5)
     ap.add_argument("--nukidora-out", choices=["kita", "nukidora"], default="kita")
@@ -396,6 +464,7 @@ def build_config(argv=None) -> ClientConfig:
         qgrp_ckpt=args.qgrp_ckpt, trans_ckpt=args.trans_ckpt,
         transcore_repo=args.transcore_repo, device=args.device,
         coop_w_self=args.coop_w_self, coop_w_third=args.coop_w_third,
+        level=args.level, aggr=args.aggr,
         nukidora_out=args.nukidora_out,
         reconnect=not args.no_reconnect, reconnect_sec=args.reconnect_sec,
         reconnect_backoff_sec=args.reconnect_backoff_sec,

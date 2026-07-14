@@ -74,6 +74,29 @@ def main() -> None:
           not _match({"type": "dahai", "actor": 0, "pai": "1m"},
                      {"type": "dahai", "actor": 0, "pai": "2m"}))
 
+    # 红5核心修复：possible_actions 把红5 dahai 折叠成普通5（validate 实测），bot 输出 5pr/
+    # 5sr。归一化后应命中（否则回退错牌＝"模型不认识红5"）。服务器实测照收 5pr/5sr。
+    check("dahai 红5筒 5pr 命中折叠后的 5p",
+          _match({"type": "dahai", "actor": 0, "pai": "5pr"},
+                 {"type": "dahai", "actor": 0, "pai": "5p"}))
+    check("dahai 红5索 5sr 命中折叠后的 5s",
+          _match({"type": "dahai", "actor": 0, "pai": "5sr"},
+                 {"type": "dahai", "actor": 0, "pai": "5s"}))
+    # 端到端：bot 想摸切红5筒，合法集里红/非红 5p 都显示为 "5p"（真机 frame [4] 实况）→
+    # 不回退、原样发 bot 的 5pr（服务器区分红/非红）
+    pas_aka = [{"type": "dahai", "actor": 0, "pai": p} for p in
+               ["1m", "1p", "2p", "3p", "4p", "5p", "5p", "6p", "6p", "4s", "7s", "9s"]]
+    out_aka = c._sanitize({"type": "dahai", "actor": 0, "pai": "5pr",
+                           "tsumogiri": True}, pas_aka)
+    check("sanitize 保留 bot 的 5pr（不回退成第一张 1m）",
+          out_aka.get("pai") == "5pr")
+    # 不误伤：红5归一化不该让 5pr 匹配到 6p
+    check("dahai 5pr 不匹配 6p",
+          not _match({"type": "dahai", "actor": 0, "pai": "5pr"},
+                     {"type": "dahai", "actor": 0, "pai": "6p"}))
+    # melds 保持严格（未观察到平台折叠副露 aka）：pon pai 5p vs 5pr 仍不匹配——见上方
+    # "pon 不同 pai 不匹配"，此处不重复。
+
     print("\n=>", "ALL PASS" if not failures else f"{len(failures)} FAILED: {failures}")
     sys.exit(0 if not failures else 1)
 

@@ -4,6 +4,7 @@
 两个已注册 bot **Nosam / Mason**（JWT 见仓根 `riichi.md`，已 gitignore）。
 
 ## 真实协议（探针 `/ws/validate` 实测，见 `.claude/sessions/c07.md`）
+
 - 连接 `wss://game.riichi.dev/ws/{validate,ranked}`，`Authorization: Bearer <JWT>` 头。
   `/ws/validate` = 待验证 bot（vs 3 个内置 tsumogiri）；`/ws/ranked` = 已激活 bot 排位。
 - 平台自动配桌 + 驱动游戏；每帧 = **单个 JSON 对象**。服务器逐帧下发 mjai 事件
@@ -19,29 +20,36 @@
 - 非法/超时动作 → **chombo（満貫罚）**；本客户端 `possible_actions` 兜底确保永不 chombo。
 
 ## 架构
+
 进程内接 qgrp bot3p（`EvCalc3P` 模型 + trans_core 只载一次，跨局复用）：每个 mjai 事件
 喂 `bot.react()` 跟踪状态 + 缓存其触发的动作；`request_action` 到达时发出缓存动作 + 补
 `request_id`，并对 `possible_actions` 做合法性兜底。**不需要 riichienv 包**（纯 MJAI 桥）。
 全在 gpu16b **aigc venv**（torch/libriichi3p/websockets）。
 
 ## 状态（2026-07-14）
+
 - ✅ **真机验证通过**：Nosam / Mason 各连 `/ws/validate` → `validation_result: passed`（gpu16b + 本机 4070 均过）。
 - ✅ **本机 4070 部署上线 ranked**：`live_start.sh` 起两进程续排位（coop 默认开、自动重连、同起）。
 - ✅ **实测被凑同一桌**（我两 bot + 1 外部玩家）；平台允许同主同桌。
 
 ## 部署（本机 4070 WSL）
+
 环境 = conda **mortal** env（`~/miniconda3/envs/mortal`，py3.12 + torch cu124 + libriichi3p + websockets），
 权重 `~/qgrp3p_run/qgrp3p_v3_ftb50k.pth`，trans_core `~/zeroppo-grp`。
 
 **启动（同起，coop 默认开）**：
+
 ```bash
 cd ~/riichienv && bash online3p/live_start.sh
 ```
+
 **停止（打完当前对局再停、同停）**：
+
 ```bash
 cd ~/riichienv && bash online3p/live_stop.sh          # 优雅：发 STOP 标记，两 bot 各打完当前对局后退
 cd ~/riichienv && bash online3p/live_stop.sh --force  # 立即强杀（不等当前对局）
 ```
+
 **看状态**：`tail -f ~/riichienv/online3p/_live/{Nosam,Mason}.log`（`[coop ON] third_seat=N` = 同桌协作中）。
 
 > 优雅停机机制：`live_stop.sh` 触碰 `/tmp/riichi_coop/STOP`；两 bot 检测到后**不中断进行中对局**，
@@ -49,6 +57,7 @@ cd ~/riichienv && bash online3p/live_stop.sh --force  # 立即强杀（不等当
 > 手动单进程调试：`--url .../ws/validate --no-reconnect --no-coop` 跑单局验证。
 
 ## 协作（用户设计）—— 侧信道指纹，`--coop` 开
+
 协作 EV 已就绪且数值精确（`../qgrp/bot3p/ev.py::EvCalc3P.set_coop`：同桌时每小局
 `leaf_pt = 0.5·自己 − 0.5·第三家`，rank-pt 零和下 = 自己 EV + 0.5·队友 EV）。
 **riichi.dev 协议不暴露玩家身份 / 对局 ID**（`start_game` 只有座位号，observation 只有牌局
@@ -64,28 +73,33 @@ cd ~/riichienv && bash online3p/live_stop.sh --force  # 立即强杀（不等当
   `--coop-w-self/--coop-w-third`（默认 0.5/0.5）。
 
 ## pt 目标函数（打牌倾向调参）
+
 bot 最大化的是 **pt EV**（引擎 `../qgrp/bot3p/ev.py::EvCalc3P`，参数在 `bot3p/config.py::BotConfig3P`）：
+
 ```
 EV(动作) = Σ_leaf w_leaf · [ Σ_r P(名次=r|leaf)·rank_pts[r]   ← 名次项（“pt 分布”）
                              + pt_per_1000·Δ素点_self/1000       ← 素点价值项
                              + bonus(leaf) ]                       ← 自摸/役满/流満 加成
 ```
+
 `w_leaf`、`P(名次|leaf)` 由 GRP 模型（`grp_trans3p_v1`：续局叶 f̂ 名次边缘 / 终局叶硬排位）给出，
 **非配置项**——要改「模型对名次概率的估计」得换 `--trans-ckpt` / 重训 GRP。可拨的旋钮（`BotConfig3P` 字段）：
 
-| 字段 | 默认 | 含义 |
-|---|---|---|
-| `rank_pts` | `(90, 0, -90)` | **pt 分布**：1/2/3 位各值多少 pt（bot 最终最大化的名次期望）|
-| `pt_per_1000` | `0.0` | **素点价值**：每 1000 素点折多少 pt（`0`＝纯名次 / 天凤口径）|
-| `tsumo_bonus_pt` / `yakuman_bonus_pt` / `nagashi_bonus_pt` | `0` | 自己 自摸 / 役满 / 流し満貫 和了加成 |
+| 字段                                                             | 默认             | 含义                                                                  |
+| ---------------------------------------------------------------- | ---------------- | --------------------------------------------------------------------- |
+| `rank_pts`                                                     | `(90, 0, -90)` | **pt 分布**：1/2/3 位各值多少 pt（bot 最终最大化的名次期望）    |
+| `pt_per_1000`                                                  | `0.0`          | **素点价值**：每 1000 素点折多少 pt（`0`＝纯名次 / 天凤口径） |
+| `tsumo_bonus_pt` / `yakuman_bonus_pt` / `nagashi_bonus_pt` | `0`            | 自己 自摸 / 役满 / 流し満貫 和了加成                                  |
 
 **调参语义（别踩坑）**：
+
 - `rank_pts` **只有差值有意义**（整体加常数不改选择）。`1位−2位` 差＝拼一位的动机，`2位−3位` 差＝防三的
   动机；默认 `(90,0,-90)` 对称。**防三优先** → 3 位更负如 `(90,10,-100)`；**拼一位** → 拉大 1-2 差如 `(120,-10,-110)`。
 - `pt_per_1000` **尺度警告**：`rank_pts` 量级 ~90，一庄素点摆动常 ±20~40k，故 `=1` 就等于给素点 ±20~40 pt 的
   直接权重、与名次同量级。想「略贪点」给 **0.1~0.5**；只有素点排名赛才给到 ~1 让素点主导。
 
 **在哪设**：
+
 - **standalone bot（`../qgrp/bot3p/run_stdio.py`）已有 CLI**：`--rank-pts 90,10,-100`、`--pt-per-1000 0.3`、
   `--tsumo-bonus-pt`、`--yakuman-bonus-pt`、`--nagashi-bonus-pt`。
 - **本客户端（`client.py` / `live_start.sh`）目前只吃默认值**——`_build_engine` 造 `BotConfig3P` 只传
@@ -97,7 +111,21 @@ EV(动作) = Σ_leaf w_leaf · [ Σ_r P(名次=r|leaf)·rank_pts[r]   ← 名次
 - ⚠ 另与 arena **评测报告**口径 `REPORT_PTS`（`arena3p/stat_report.py` 的 avg_pt 顺位点 + 单列素点）是两码事：
   一个是给对局打分的评委，一个是 bot 自己的目标函数。
 
+## 剥削旋钮（对手 profile：水平 / 激进度）
+
+模型在自博弈谱上**条件于 (水平, 激进度) 身份**训练（train-003 §2），推理端喂这对值 = **告诉模型对手是什么
+profile，让它针对性调整打法去剥削对手**。编码在 aux `AUX_LEVEL_AGGR`（`../qgrp/bot3p/seq_encoder.py`），
+**三家同值**（一个整桌常数，非逐座；`for r in range(3)` 三家写同值）——所以拨的是「这桌对手的整体 profile」。
+
+- 旋钮：`--level`（水平）、`--aggr`（激进度）；**不给 = `BotConfig3P` 默认 `level=8.0`/`aggr=12.0`**
+  （`BOT_LEVEL`/`BOT_AGGR`，= 自产谱口径，对手 Mortal 系）。归一化：aux 里 `level/10`、`aggr/20`
+  （量级 level~0-10、aggr~0-20）。config 注释另给 **H 凤桌口径 `--level 7.5 --aggr 13`**。
+- `live_start.sh` env 透传：`LEVEL=7.5 AGGR=13 bash online3p/live_start.sh`（不设=默认）。
+- 引擎就绪日志会打印生效值：`引擎就绪 … level=8.0 aggr=12.0（剥削旋钮）`，重启后据此确认。
+- ⚠ 三家同值＝**没有「自家 vs 对手」分别设**的能力（要分座建模得改编码器 + 重训）。
+
 ## 文件
+
 - `client.py` —— riichi.dev 在线客户端（**上线入口**）。
 - `coop_detect.py` —— 侧信道同桌检测（共享目录指纹互认）。
 - `tokens.py` —— 从 `riichi.md` 按名取 JWT。
