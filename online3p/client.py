@@ -78,10 +78,18 @@ class ClientConfig:
     reconnect: bool = True
     reconnect_sec: float = 3.0
     ping_interval: float = 20.0
+    # 侧信道协作（**默认开**＝核心测试；--no-coop 关。只传"是否同桌"的公开局面指纹，
+    # 不传任何私有手牌信息，每 bot 仍只用自己观测独立优化 0.5·self−0.5·third）
+    coop_enabled: bool = True
+    coop_dir: str = "/tmp/riichi_coop"
+    teammates: tuple = ("Nosam", "Mason")
+    coop_wait_sec: float = 3.0     # 同桌握手轮询上限（覆盖两进程到达时间差）
+    # 优雅停机：stop_file 出现 或 收到 SIGTERM/SIGINT → **打完当前对局**后退出（不中断进行中对局）
+    stop_file: str = "/tmp/riichi_coop/STOP"
 
 
 class OnlineMjaiClient:
-    def __init__(self, cfg: ClientConfig, coop_detector=None):
+    def __init__(self, cfg: ClientConfig, coop=None):
         self.cfg = cfg
         self.bot = None
         self.my_seat: int | None = None
@@ -89,10 +97,29 @@ class OnlineMjaiClient:
         # validate 端点：end_game 后还会发 validation_result（要等它，不能先断）；
         # ranked：end_game 即收工 → 断开重连（重新排队）。
         self.is_validate = "validate" in cfg.url
-        # coop_detector(client) -> third_pid|None（默认 None＝纯自己 EV）。
-        # riichi.dev 无玩家身份 → 需侧信道实现，见 README。
-        self.coop_detector = coop_detector
+        # 侧信道同桌检测器（coop_detect.FileFingerprintCoop）或 None＝纯自己 EV。
+        # riichi.dev 无玩家身份 ⇒ 只能靠侧信道（两 bot 本机进程），见 coop_detect.py。
+        self.coop = coop
+        # 同桌＝整局属性：用整局不变的对局指纹（首小局 E1）匹配，每小局重查直到命中并锁存
+        # （不早锁 solo；即便首局两进程错开，次局瞬时重读也能命中）。
+        self._coop_third: int | None = None
+        self._game_fp: str | None = None
+        self._coop_attempts = 0
+        # 优雅停机：收到信号/停机文件后，打完当前对局才退（不中断进行中对局）
+        self._stop = False
+        self._in_game = False
         self._build_engine()
+
+    def _request_stop(self) -> None:
+        if not self._stop:
+            self._stop = True
+            self.log("收到停机信号 → 打完当前对局后退出（不中断本局）")
+
+    def _should_stop(self) -> bool:
+        if self._stop:
+            return True
+        sf = self.cfg.stop_file
+        return bool(sf) and os.path.exists(sf)
 
     def log(self, msg: str) -> None:
         sys.stderr.write(f"[{self.cfg.my_name}] {msg}\n")
@@ -115,31 +142,54 @@ class OnlineMjaiClient:
         self.evcalc = EvCalc3P(self.bot_cfg)   # 模型 + trans_core 只载一次
         self.log(f"引擎就绪 ckpt={self.cfg.qgrp_ckpt} device={self.cfg.device}")
 
-    # ── 开局：定座位 + 重建 bot + 协作判定 ─────────────────────
+    # ── 开局：定座位 + 重建 bot（协作在 start_kyoku 判定）─────────
     def _on_start_game(self, ev: dict) -> None:
         seat = ev.get("id")
         self.my_seat = int(seat) if seat is not None else 0
         self.pending = None
         self.bot = self._QgrpBot3P(self.my_seat, self.bot_cfg, evcalc=self.evcalc)
-        third = None
-        if self.coop_detector is not None:
+        self.evcalc.clear_coop()   # 新局先复位；同桌与否在 start_kyoku 定
+        self._coop_third = None    # 每局重置：同桌判定基于本局指纹
+        self._game_fp = None
+        self._coop_attempts = 0
+        self._in_game = True       # 进行中对局：优雅停机须打完它
+        self.log(f"start_game seat={self.my_seat} coop={'侧信道' if self.coop else '关'}")
+
+    # ── 每小局开局：侧信道判同桌（用整局不变指纹，重查直到命中）→ set/clear coop ──
+    def _on_start_kyoku(self, ev: dict) -> None:
+        if self.coop is None or self.my_seat is None:
+            return
+        from .coop_detect import fingerprint
+        if self._game_fp is None:              # 首小局：锚定整局不变的对局指纹
+            self._game_fp = fingerprint(ev)
+        if self._coop_third is None:           # 尚未命中 → 刷新自己指纹并重查
             try:
-                third = self.coop_detector(self)
+                wait = self.cfg.coop_wait_sec if self._coop_attempts == 0 else 0.0
+                third = self.coop.detect(self.my_seat, self._game_fp, wait=wait)
             except Exception:  # noqa: BLE001
-                self.log("coop_detector 异常：\n" + traceback.format_exc())
-        if third is not None:
-            self.evcalc.set_coop(int(third), self.cfg.coop_w_self, self.cfg.coop_w_third)
-            self.log(f"[coop ON] seat={self.my_seat} third_seat={third} "
-                     f"w=(self {self.cfg.coop_w_self}, third {self.cfg.coop_w_third})")
+                self.log("coop 检测异常：\n" + traceback.format_exc())
+                third = None
+            self._coop_attempts += 1
+            if third is not None:
+                self._coop_third = third
+        kyoku = f"{ev.get('bakaze')}{ev.get('kyoku')}-{ev.get('honba')}"
+        if self._coop_third is not None:
+            self.evcalc.set_coop(self._coop_third, self.cfg.coop_w_self,
+                                 self.cfg.coop_w_third)
+            self.log(f"[coop ON] seat={self.my_seat} third_seat={self._coop_third} "
+                     f"kyoku={kyoku}")
         else:
             self.evcalc.clear_coop()
-            self.log(f"[coop OFF] seat={self.my_seat}（纯自己 EV）")
+            self.log(f"[coop OFF] seat={self.my_seat} kyoku={kyoku}（暂未匹配到队友）")
 
     # ── 喂一个 mjai 事件给 bot（跟踪状态 + 缓存动作）────────────
     def _feed(self, ev: dict) -> None:
         ev = _dialect_in(ev)
-        if ev.get("type") == "start_game":
+        et = ev.get("type")
+        if et == "start_game":
             self._on_start_game(ev)
+        elif et == "start_kyoku":
+            self._on_start_kyoku(ev)   # 协作判定须在喂 bot（→evcalc.start_kyoku）前
         if self.bot is None:
             return
         try:
@@ -200,10 +250,12 @@ class OnlineMjaiClient:
             return self._on_request_action(ev), None
         if et == "validation_result":
             self.log(f"validation_result: {json.dumps(ev, ensure_ascii=False)[:300]}")
+            self._in_game = False
             return None, "validation_result"
         if et == "end_game":
             self.log(f"end_game: {json.dumps(ev, ensure_ascii=False)[:300]}")
             self.pending = None
+            self._in_game = False   # 本局打完（优雅停机的安全点）
             # validate 下不作终止（等 validation_result）；ranked 下终止→重连
             return None, (None if self.is_validate else "end_game")
         if et == "error":
@@ -224,7 +276,16 @@ class OnlineMjaiClient:
                             ping_interval=self.cfg.ping_interval,
                             max_size=None) as ws:
             self.log(f"已连接 {self.cfg.url}")
-            async for msg in ws:
+            while True:
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    # 空闲（排队/局间）时轮询停机：无进行中对局才停，绝不中断本局
+                    if self._should_stop() and not self._in_game:
+                        return "stop"
+                    continue
+                except Exception:  # noqa: BLE001  连接关闭等
+                    return "closed"
                 if isinstance(msg, bytes):
                     continue
                 try:
@@ -240,19 +301,31 @@ class OnlineMjaiClient:
                     if out is not None:
                         await ws.send(out)
                     if control in _TERMINAL:
-                        return control
-            return "closed"
+                        # 本局打完；若已请求停机则不再重连
+                        return "stop" if self._should_stop() else control
 
     async def run(self) -> None:
+        import signal
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, self._request_stop)
+            except (NotImplementedError, ValueError):
+                pass
         while True:
+            if self._should_stop():
+                self.log("停机（无进行中对局），退出"); break
             try:
                 result = await self._run_once()
             except Exception as e:  # noqa: BLE001
                 self.log(f"连接异常：{e!r}")
                 result = "error"
+            if result == "stop":
+                self.log("已优雅停机：当前对局打完，退出"); break
             if result == "validation_result" or not self.cfg.reconnect:
-                self.log(f"结束（{result}），不再重连")
-                break
+                self.log(f"结束（{result}），不再重连"); break
+            if self._should_stop():
+                self.log("停机：当前对局已结束，不再重连"); break
             self.log(f"{result} → {self.cfg.reconnect_sec}s 后重连（重新排队）…")
             await asyncio.sleep(self.cfg.reconnect_sec)
 
@@ -278,6 +351,15 @@ def build_config(argv=None) -> ClientConfig:
     ap.add_argument("--nukidora-out", choices=["kita", "nukidora"], default="kita")
     ap.add_argument("--no-reconnect", action="store_true")
     ap.add_argument("--reconnect-sec", type=float, default=3.0)
+    # 侧信道协作（**默认开**）：同桌时 0.5·self−0.5·third；--no-coop 关＝纯自己 EV
+    ap.add_argument("--no-coop", dest="coop_enabled", action="store_false",
+                    default=True, help="关闭侧信道同桌检测（默认开）")
+    ap.add_argument("--coop-dir", default="/tmp/riichi_coop",
+                    help="两 bot 互认的共享目录")
+    ap.add_argument("--teammates", default="Nosam,Mason", help="我方 bot 名集合")
+    ap.add_argument("--coop-wait-sec", type=float, default=3.0)
+    ap.add_argument("--stop-file", default="/tmp/riichi_coop/STOP",
+                    help="该文件出现→打完当前对局后优雅退出（两 bot 同一文件＝同停）")
     args = ap.parse_args(argv)
 
     if args.jwt:
@@ -297,7 +379,10 @@ def build_config(argv=None) -> ClientConfig:
         transcore_repo=args.transcore_repo, device=args.device,
         coop_w_self=args.coop_w_self, coop_w_third=args.coop_w_third,
         nukidora_out=args.nukidora_out,
-        reconnect=not args.no_reconnect, reconnect_sec=args.reconnect_sec)
+        reconnect=not args.no_reconnect, reconnect_sec=args.reconnect_sec,
+        coop_enabled=args.coop_enabled, coop_dir=args.coop_dir,
+        teammates=tuple(t.strip() for t in args.teammates.split(",")),
+        coop_wait_sec=args.coop_wait_sec, stop_file=args.stop_file)
 
 
 def main(argv=None) -> None:
@@ -307,7 +392,13 @@ def main(argv=None) -> None:
         torch.set_num_threads(1)
     except Exception:  # noqa: BLE001
         pass
-    client = OnlineMjaiClient(cfg)
+    coop = None
+    if cfg.coop_enabled:
+        from .coop_detect import FileFingerprintCoop
+        coop = FileFingerprintCoop(cfg.coop_dir, cfg.my_name, cfg.teammates)
+        sys.stderr.write(f"[{cfg.my_name}] 侧信道协作已开：dir={cfg.coop_dir} "
+                         f"teammates={cfg.teammates}（仅传是否同桌，无手牌信息）\n")
+    client = OnlineMjaiClient(cfg, coop=coop)
     try:
         asyncio.run(client.run())
     except KeyboardInterrupt:

@@ -10,7 +10,7 @@
 - **真实协议（探针 `/ws/validate` 实测，非先前 batch 假设）**：`wss://game.riichi.dev/ws/{validate,ranked}` + Bearer；**每帧单 JSON**，逐帧 mjai 事件，bot **只对 `request_action` 回**且回显 `request_id`；`request_action` 带 `possible_actions`（防 chombo 兜底）+ base64 `observation`（不用，状态从事件流跟踪）；`start_game` **只有座位 id，无 names/身份/game_id**；`end_game` 后 validate 发 `validation_result`、ranked 断开重连；拔北=`kita`；非法/超时=chombo。
 - **产物**：`online3p/`（`client.py` 真实协议上线入口=进程内接 qgrp bot3p、模型只载一次、逐帧喂 react 缓存动作、request_action 补 request_id、possible_actions 兜底、kita↔nukidora；`probe_riichidev.py` 协议探针；`tokens.py`/`test_coop_ev.py`；`mock_server.py`/`_smoke_driver.sh` 为旧 batch 假设的 mock，已被真机取代）+ qgrp `bot3p/ev.py::set_coop`（additive 默认关，同步 gpu16b）。
 - **验证**：① 协作 leaf_pt 数值 coop==`0.5·self−0.5·third` **max|err|=0**；② **真机验证通过**——Nosam/Mason 各连 `/ws/validate` 打完整局三麻、零 chombo/掉线 → `validation_result: passed`（日志 `online3p/_smoke/val_{nosam,mason}.log`）。
-- **⚠ 协作触发受限**：riichi.dev 协议**不暴露玩家身份/game_id** ⇒ 无法从协议判定两 bot 同桌。`coop_detector` 钩子默认 None＝纯自己 EV。要触发需**侧信道指纹**（两 bot 本机进程共享目录比对公开局面），且涉合规（双账号协作压制第三家＝合谋）——**待用户决策**。
+- **本机 4070 部署上线 + 协作默认开**：部署在**本机 4070 WSL**（conda `mortal` env：py3.12+torch cu124+libriichi3p+websockets；权重拷本机 `~/qgrp3p_run/`，trans_core `~/zeroppo-grp`）。启停脚本 `online3p/live_{start,stop}.sh`（同起同停）。**实测被凑同一桌**（我两 bot+1 外部玩家）⇒ 平台允许同主同桌。协作检测因平台**无玩家身份/game_id**用**侧信道指纹**（`coop_detect.py`：整局不变的对局指纹＝首小局 E1 公开状态，经共享目录 `/tmp/riichi_coop` 互认→同桌返回第三家→`set_coop`；每小局重查直到命中，修掉首局竞态漏判）。**coop 默认开**（用户裁定＝核心测试；只传是否同桌、无手牌信息，非隐藏信息共谋；`--no-coop` 关）。**优雅停机**：STOP 标记/SIGTERM → 打完当前对局才退（不中断本局）。
 - **环境事实**：客户端用 **aigc venv**（torch/libriichi3p/websockets，纯 MJAI 桥不需 riichienv 包）；`import riichienv` 在 aigc venv 是空 namespace，真包在仓库 `.venv`（见记忆 riichienv-pkg-in-repo-venv）。
 
 （历史）**change-002 ✅ 2×joint-mse vs 1×v8guard 30k**；**change-001 核心完成**——见下。
@@ -45,10 +45,10 @@
 - 构建产物：`.venv`（uv）+ 已 `maturin develop` 的 `riichienv._riichienv`（editable）。
 
 ## 下一步
-### change-003（真机验证已过；ranked 上线 + 协作触发待定）
-1. **ranked 上线**：`--url wss://game.riichi.dev/ws/ranked --bot-name Nosam|Mason`（aigc venv，PYTHONPATH 见 README）两进程续排位（默认自动重连）。观察 rating/稳定性/有无 chombo。
-2. **协作触发（待用户决策）**：平台无玩家身份/game_id，`names` 路线作废。方案=侧信道指纹（两 bot 共享目录比对公开局面判同桌）→ `client.py` 的 `coop_detector`。⚠ 合规：双账号协作压第三家＝合谋，落地前确认平台规则。
-3. push 前先问用户（本会话已 commit 未 push）。
+### change-003（本机 4070 已部署上线 + coop 默认开）
+1. **运维**：本机 `bash online3p/live_start.sh` 起 / `bash online3p/live_stop.sh` 优雅停（打完当前对局、同停）/ `--force` 强停。日志 `online3p/_live/{Nosam,Mason}.log`。⚠ 别在 gpu16b 同时跑（同 token 双连冲突）。
+2. **持续观察**：同桌局 `[coop ON] third_seat=N`；关注 rating、有无 chombo/掉线、协作效果（第三家是否被压制）。
+3. **待收尾**：真机同桌"两 bot 均 coop ON"live 确认（后台监控 b8betwvgm 捕中即闭合竞态修复）；push 前先问用户（本会话已 commit 未 push）。
 ### change-002（✅ 完成）
 1. gpu-16 资产传完 → 解压 sanma_v8_guard + 软链 `_pkgs/v8` 的 v8_bc → smoke 1-2 局 → nohup 跑 30k（`run_eval --players joint-mse,joint-mse,v8guard --rotate --n 10000 --resume`）→ `stat_report --rotate` 出 2v1 强弱。
 ### change-001（核心已完成；可选收尾）

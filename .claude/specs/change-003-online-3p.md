@@ -53,15 +53,19 @@
 - [x] **真机验证通过（2026-07-14）**：Nosam / Mason 各连 `wss://game.riichi.dev/ws/validate`，
       qgrp v3 打完整局三麻、零 chombo/掉线、零 react 异常、零 sanitize 回退 →
       `validation_result: {"passed": true}`（两 bot 均过）。日志 `online3p/_smoke/val_{nosam,mason}.log`。
-- [ ] **ranked 上线**：`--url wss://game.riichi.dev/ws/ranked` 起两进程持续排位（solo 自己 EV）。
-- [ ] **协作触发**：平台无玩家身份/game_id ⇒ 需侧信道，待用户定（见续点 + README）。
+- [x] **本机 4070 部署 + ranked 上线**：conda `mortal` env（torch cu124+libriichi3p+websockets）+ 本机权重；
+      `live_{start,stop}.sh`（同起同停 + 优雅停机=打完当前对局才退）；本机 validation 亦 passed。
+      **实测被凑同一桌**（我两 bot + 1 外部玩家），确认平台允许同主同桌。
+- [x] **侧信道协作检测建成 + 单测 + coop 默认开**：`coop_detect.py`（整局不变的对局指纹＝首小局 E1
+      公开状态，共享目录互认，每小局重查直到命中——修掉首局两进程错开的竞态漏判）；单测四例过；
+      **默认开**（用户裁定＝核心测试，只传是否同桌无手牌信息；`--no-coop` 关）。
+- [ ] **真机同桌"两 bot 均 coop ON"live 确认**（早期竞态版曾一 ON 一 OFF，修复后待捕获同桌局复核）。
 
 ## 续点（下次接手）
-1. ranked 上线：`--url .../ws/ranked --bot-name Nosam|Mason`（默认自动重连＝续排位）。先观察
-   线上稳定性（rating 变化、有无 chombo/掉线）。
-2. **协作检测（待用户决策）**：riichi.dev 不给玩家身份/对局 ID，`names` 路线作废。可行方案 =
-   **侧信道指纹**（两 bot 均本机进程）：各自把本局公开状态指纹（dora 指示 + scores + honba +
-   kyoku + 公开牌河）写共享目录，指纹一致且座位不同 ⇒ 同桌，第三家 = 剩下座位 →
-   `client.py` 的 `coop_detector` 返回 third_pid → `evcalc.set_coop`。启发式（碰撞极低）。
-   ⚠ **合规**：排位对他人 bot 用双账号协作压制第三家＝合谋，落地前先确认平台规则允许。
-3. observation（base64 JSON）若未来加入玩家身份字段，可改用它直接判同桌（免侧信道）。
+1. ranked 上线已在跑（solo，自动重连）。持续观察稳定性（rating、有无 chombo/掉线）；
+   进程/日志：gpu16b `online3p/_live/{Nosam,Mason}.log`。
+2. **协作激活（待用户确认合规）**：给两 ranked 进程加 `--coop`（同 `--coop-dir`）即启用侧信道
+   同桌检测（`coop_detect.py` 已建+单测）；同桌局打印 `[coop ON] third_seat=N`。⚠ 双账号协作
+   压制第三家＝合谋，激活前确认 riichi.dev 规则允许。指纹 = start_kyoku 座位无关公开字段
+   （settle 0.4s 让两进程互见）；开局 E1 全 35000 时仅靠宝牌指示区分（误配率低且下局自纠）。
+3. observation（base64 JSON）若未来加入玩家身份字段，可改用它直接判同桌（免侧信道、免误配）。
