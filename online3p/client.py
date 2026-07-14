@@ -76,7 +76,8 @@ class ClientConfig:
     coop_w_third: float = 0.5
     nukidora_out: str = "kita"
     reconnect: bool = True
-    reconnect_sec: float = 3.0
+    reconnect_sec: float = 0.0        # 正常 end_game 后重连（重新排队）延迟——默认 0=立即
+    reconnect_backoff_sec: float = 3.0  # 异常/断线后重连退避（≠正常 end_game），防 0s 猛捶服务器
     ping_interval: float = 20.0
     # 侧信道协作（**默认开**＝核心测试；--no-coop 关。只传"是否同桌"的公开局面指纹，
     # 不传任何私有手牌信息，每 bot 仍只用自己观测独立优化 0.5·self−0.5·third）
@@ -336,8 +337,12 @@ class OnlineMjaiClient:
                 self.log(f"结束（{result}），不再重连"); break
             if self._should_stop():
                 self.log("停机：当前对局已结束，不再重连"); break
-            self.log(f"{result} → {self.cfg.reconnect_sec}s 后重连（重新排队）…")
-            await asyncio.sleep(self.cfg.reconnect_sec)
+            # 正常 end_game→立即重排（reconnect_sec，默认 0）；异常/断线→退避防猛捶
+            delay = (self.cfg.reconnect_backoff_sec if result == "error"
+                     else self.cfg.reconnect_sec)
+            self.log(f"{result} → {delay}s 后重连（重新排队）…")
+            if delay > 0:
+                await asyncio.sleep(delay)
 
 
 def build_config(argv=None) -> ClientConfig:
@@ -360,7 +365,10 @@ def build_config(argv=None) -> ClientConfig:
     ap.add_argument("--coop-w-third", type=float, default=0.5)
     ap.add_argument("--nukidora-out", choices=["kita", "nukidora"], default="kita")
     ap.add_argument("--no-reconnect", action="store_true")
-    ap.add_argument("--reconnect-sec", type=float, default=3.0)
+    ap.add_argument("--reconnect-sec", type=float, default=0.0,
+                    help="正常 end_game 后重连延迟秒（默认 0=立即重排）")
+    ap.add_argument("--reconnect-backoff-sec", type=float, default=3.0,
+                    help="异常/断线后重连退避秒（默认 3，防 0s 猛捶服务器）")
     # 侧信道协作（**默认开**）：同桌时 0.5·self−0.5·third；--no-coop 关＝纯自己 EV
     ap.add_argument("--no-coop", dest="coop_enabled", action="store_false",
                     default=True, help="关闭侧信道同桌检测（默认开）")
@@ -390,6 +398,7 @@ def build_config(argv=None) -> ClientConfig:
         coop_w_self=args.coop_w_self, coop_w_third=args.coop_w_third,
         nukidora_out=args.nukidora_out,
         reconnect=not args.no_reconnect, reconnect_sec=args.reconnect_sec,
+        reconnect_backoff_sec=args.reconnect_backoff_sec,
         coop_enabled=args.coop_enabled, coop_dir=args.coop_dir,
         teammates=tuple(t.strip() for t in args.teammates.split(",")),
         coop_wait_sec=args.coop_wait_sec, stop_file=args.stop_file)
