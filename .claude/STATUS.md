@@ -3,13 +3,15 @@
 > 维护约定：本文件只放「当前状态 / 产物 / 下一步 / 待决」这类会变的事实。
 > 会话日志只做索引：每个 session 一行（日期 + 一句话 + 链接），详情写进 `sessions/cNN.md`。
 
-## 当前阶段（2026-07-14）：**change-003 qgrp v3 接入在线对战——代码+离线验证全绿，等平台 endpoint 上线**
+## 当前阶段（2026-07-14）：**change-003 qgrp v3 接入 riichi.dev 在线三麻——核心真机验证通过（两 bot validation passed），协作触发待用户定**
 
-### change-003（c07）：qgrp v3 打牌器接入在线三麻对战 + 双 bot 协作 ✅ 代码/离线验证完成，⬜ 待真实平台
-- **任务**：`../qgrp` v3 打牌器接进 riichienv **在线对战**（标准 MJAI over WebSocket）；两平台 bot **Nosam/Mason**（JWT 在仓根 `riichi.md`，已 gitignore）；权重 **qgrp3p_v3_ftb50k.pth**。协作（用户设计）：未同桌→最大化自己 EV；同桌→`0.5·自己 pt_EV + 0.5·(−第三家 pt_EV)`（rank-pt 零和下 = 自己 EV+0.5·队友 EV）。
-- **产物**：本仓 `online3p/`（`client.py` 上线入口=进程内接 qgrp bot3p、模型只载一次、WS batch 循环、方言 kita↔nukidora、从 `start_game.names` 独立判协作、鉴权/信封/配桌握手全 CLI/env 旋钮；`mock_server.py`=RiichiEnv-over-WS mock 平台；`tokens.py`/`test_coop_ev.py`/`_smoke_driver.sh`/`README.md`）+ qgrp `bot3p/ev.py` 加协作模式（`set_coop`，additive 默认关，同步 gpu16b `/root/qgrp`）。
-- **验证全绿（gpu16b）**：① 协作 leaf_pt 数值 coop==`0.5·self−0.5·third` **max|err|=0**（权重可调/clear 回自家均 =0，coop≠self max|diff|=45）；② mock 端到端 2 真实 bot+dummy 1 半庄——两 bot **coop ON** 正确定位第三家、186 步零 select 失配、终局合法（两队友 107900 / 第三家 −2900 垫底）；③ coop OFF（单 bot+2 dummy）394 步合法。**唯缺真实平台 endpoint**（协议假设见 `online3p/README.md`「上线待对齐」，全旋钮化）。详见 `specs/change-003-online-3p.md`、`sessions/c07.md`。
-- **环境坑（新）**：aigc venv 的 `import riichienv` 是空 namespace（`__file__=None`）；真 riichienv 在**仓库 `.venv`**（py3.10 maturin develop）——mock 用 `.venv`、客户端用 aigc venv，两者各装 websockets 16.1。
+### change-003（c07）：qgrp v3 接入 riichi.dev 在线三麻对战 ✅ 真机验证通过，⬜ ranked 上线 + 协作触发待定
+- **任务**：`../qgrp` v3 打牌器接进 **riichi.dev / RiichiLab** 在线三麻；两平台 bot **Nosam/Mason**（JWT 在仓根 `riichi.md`，gitignore）；权重 **qgrp3p_v3_ftb50k.pth**。协作（用户设计）：未同桌→最大化自己 EV；同桌→`0.5·自己 + 0.5·(−第三家)`（= 自己 EV + 0.5·队友 EV）。
+- **真实协议（探针 `/ws/validate` 实测，非先前 batch 假设）**：`wss://game.riichi.dev/ws/{validate,ranked}` + Bearer；**每帧单 JSON**，逐帧 mjai 事件，bot **只对 `request_action` 回**且回显 `request_id`；`request_action` 带 `possible_actions`（防 chombo 兜底）+ base64 `observation`（不用，状态从事件流跟踪）；`start_game` **只有座位 id，无 names/身份/game_id**；`end_game` 后 validate 发 `validation_result`、ranked 断开重连；拔北=`kita`；非法/超时=chombo。
+- **产物**：`online3p/`（`client.py` 真实协议上线入口=进程内接 qgrp bot3p、模型只载一次、逐帧喂 react 缓存动作、request_action 补 request_id、possible_actions 兜底、kita↔nukidora；`probe_riichidev.py` 协议探针；`tokens.py`/`test_coop_ev.py`；`mock_server.py`/`_smoke_driver.sh` 为旧 batch 假设的 mock，已被真机取代）+ qgrp `bot3p/ev.py::set_coop`（additive 默认关，同步 gpu16b）。
+- **验证**：① 协作 leaf_pt 数值 coop==`0.5·self−0.5·third` **max|err|=0**；② **真机验证通过**——Nosam/Mason 各连 `/ws/validate` 打完整局三麻、零 chombo/掉线 → `validation_result: passed`（日志 `online3p/_smoke/val_{nosam,mason}.log`）。
+- **⚠ 协作触发受限**：riichi.dev 协议**不暴露玩家身份/game_id** ⇒ 无法从协议判定两 bot 同桌。`coop_detector` 钩子默认 None＝纯自己 EV。要触发需**侧信道指纹**（两 bot 本机进程共享目录比对公开局面），且涉合规（双账号协作压制第三家＝合谋）——**待用户决策**。
+- **环境事实**：客户端用 **aigc venv**（torch/libriichi3p/websockets，纯 MJAI 桥不需 riichienv 包）；`import riichienv` 在 aigc venv 是空 namespace，真包在仓库 `.venv`（见记忆 riichienv-pkg-in-repo-venv）。
 
 （历史）**change-002 ✅ 2×joint-mse vs 1×v8guard 30k**；**change-001 核心完成**——见下。
 
@@ -43,9 +45,9 @@
 - 构建产物：`.venv`（uv）+ 已 `maturin develop` 的 `riichienv._riichienv`（editable）。
 
 ## 下一步
-### change-003（等平台 endpoint 上线）
-1. 拿到平台 WS endpoint → `cd /root/riichienv` 用 aigc venv 起 Nosam/Mason 两进程（`python -m online3p.client --url wss://… --bot-name Nosam/Mason`，见 `online3p/README.md`）。按线上首包调旋钮：`--auth-mode`（header/query/message）、`--hello-msg`（配桌握手）、消息信封解包、`--nukidora-out`。
-2. 先各自 solo 跑几局确认协议不失步 → 再让两 bot 进同一队列，看客户端 `[coop ON]` 日志 + 第三家被压制。
+### change-003（真机验证已过；ranked 上线 + 协作触发待定）
+1. **ranked 上线**：`--url wss://game.riichi.dev/ws/ranked --bot-name Nosam|Mason`（aigc venv，PYTHONPATH 见 README）两进程续排位（默认自动重连）。观察 rating/稳定性/有无 chombo。
+2. **协作触发（待用户决策）**：平台无玩家身份/game_id，`names` 路线作废。方案=侧信道指纹（两 bot 共享目录比对公开局面判同桌）→ `client.py` 的 `coop_detector`。⚠ 合规：双账号协作压第三家＝合谋，落地前确认平台规则。
 3. push 前先问用户（本会话已 commit 未 push）。
 ### change-002（✅ 完成）
 1. gpu-16 资产传完 → 解压 sanma_v8_guard + 软链 `_pkgs/v8` 的 v8_bc → smoke 1-2 局 → nohup 跑 30k（`run_eval --players joint-mse,joint-mse,v8guard --rotate --n 10000 --resume`）→ `stat_report --rotate` 出 2v1 强弱。
@@ -71,4 +73,4 @@
 - 2026-06-29 · c04 · 步骤4 v8 接入：探明 `libriichi_sanma.mjai.Bot`+react_batch 协议同构、.so abi3 可跑 py3.12、方言=standard；fetch 资产到 _pkgs/v8、写 build_v8_bot+registry，引擎远端&本地双 smoke 通过；arena 全链路候 10k 腾 RAM。[详情](sessions/c04.md)
 - 2026-06-30 · c05 · 步骤5 座位轮转复式：部署 gpu-16（aigc 3.12 真环境，踩 rust1.92坏toolchain/老pip--group 坑后定铁律入 CLAUDE.md），run_eval 加 --rotate+--resume，跑 joint/community/v8 12000 局复式得真实强弱 **joint>v8>community（极接近）**。[详情](sessions/c05.md)
 - 2026-06-30 · c06 · change-002 第二测试任务：2×joint-mse(3p-mse-v1.1) vs 1×v8guard(同事 guard 完整版) 接入（build_v8guard_bot 复刻 SanmaV8GuardEngine + joint 权重参数化 + 2v1 轮转 + review 工具）+ **等价性 review 100% PASS**（牌谱去两模型原版重放：6739 实战 + 6690 压测 + 335449 helper 全等）→ gpu-16 跑 30k。[详情](sessions/c06.md)
-- 2026-07-14 · c07 · change-003 qgrp v3 接入在线对战（标准 MJAI over WebSocket）：建 `online3p/`（client 进程内接 bot3p + mock 平台 + 全旋钮）+ qgrp `ev.py` 协作模式 `set_coop`（同桌 0.5·self−0.5·third，默认关逐位不变）；端到端 mock 冒烟 coop ON/OFF 两分支 + 数值 max|err|=0 全绿，**等平台 endpoint 上线**。[详情](sessions/c07.md)
+- 2026-07-14 · c07 · change-003 qgrp v3 接入 **riichi.dev** 在线三麻：探针实测真实协议（单帧 mjai + request_action/request_id + 无玩家身份）→ 重写 `online3p/client.py`（纯 MJAI 桥、aigc venv、possible_actions 防 chombo）+ qgrp `ev.py::set_coop`；**Nosam/Mason 真机 `/ws/validate` 均 passed**；协作触发受限于平台无身份/game_id（需侧信道，待用户定）。[详情](sessions/c07.md)

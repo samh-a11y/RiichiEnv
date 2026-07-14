@@ -1,29 +1,31 @@
 #!/usr/bin/env python3
-"""qgrp3p 打牌器接入 riichienv 在线对战（标准 MJAI over WebSocket）——change-003。
+"""qgrp3p 打牌器接入 riichi.dev / RiichiLab 在线三麻对战——change-003。
 
-协议（= mjai.app / akagi「标准 MJAI bot」约定，搬到 WebSocket）：
-  · 连接：默认 ``Authorization: Bearer <JWT>`` 头（--auth-mode 可切 query/message/none）。
-  · 平台自动配桌后，每条 WS 消息 = 一批 mjai 事件（JSON 数组；亦容忍单事件 dict
-    或 ``{"events":[...]}`` 信封）；客户端每批回**恰好一条** reaction JSON
-    （无动作 = ``{"type":"none"}``）。
-  · ``start_game.id`` = 本座（权威）；``start_game.names`` = 三家名（判协作 + 定第三家）。
-  · ``end_game`` 一局收尾；默认保持连接等平台下一局（--exit-on-end-game 可改）。
+真实协议（探针 /ws/validate 实测，见 sessions/c07）：
+  · 连接 `wss://game.riichi.dev/ws/{validate,ranked}`，`Authorization: Bearer <JWT>` 头。
+  · 平台自动配桌、驱动游戏；每帧 = **单个 JSON 对象**。服务器发的 mjai 事件
+    （start_game/start_kyoku/tsumo/dahai/kita/pon/kan/reach/hora/end_kyoku…）逐帧到达，
+    bot **只对 `request_action` 帧回复**——一条 mjai 动作 + **回显 `request_id`**
+    （不响应=`{"type":"none","request_id":…}`）。`request_action` 带 `possible_actions`
+    （合法集，防 chombo 兜底用）+ base64 `observation`（本客户端不需要，状态从事件流跟踪）。
+  · `start_game.id` = 本座（0-2），**无 names / 无玩家身份 / 无 game_id**。
+  · `action_ack` 确认；`end_game`/`validation_result` 终止 → 断开（平台不自动续局，
+    ranked 下重连即重新排队）。`kita` = 拔北（客户端 kita↔nukidora）。
 
-进程内接 qgrp bot3p（模型只载一次、跨 game 复用 evcalc），方言由本客户端自持
-（平台线用 ``kita``、Mortal 系 bot 用 ``nukidora``，双向改写）。
+架构：进程内接 qgrp bot3p（模型只载一次），把每个 mjai 事件喂 `bot.react()` 跟踪状态、
+缓存其触发的动作，`request_action` 到达时发出+补 request_id；`possible_actions` 做合法性
+兜底防 chombo。全在 gpu16b aigc venv（torch/libriichi3p/websockets）。
 
-协作（用户设计）：两 bot（Nosam/Mason）**未同桌** → 纯最大化自己 EV；**同桌** →
-每个 bot 目标 = 0.5·自己 pt_EV + 0.5·(−第三家 pt_EV)（实现 = 每小局把 leaf_pt
-换成 0.5·self − 0.5·third，见 bot3p/ev.py::set_coop）。两 bot 各自从 names 独立
-判定同桌、定位第三家，无需侧信道。
+协作（用户设计，`bot3p/ev.py::set_coop` 已就绪，同桌 0.5·self−0.5·third）：**riichi.dev
+协议不暴露玩家身份/对局 ID，无法从协议数据判定两 bot 是否同桌**。检测做成可插拔
+`coop_detector`，默认 None＝纯自己 EV（= 未同桌行为）。侧信道检测方案见 README / 待用户定。
 
 跑法（gpu16b）：
     cd /root/riichienv
     PYTHONPATH=/root/Mortal3/mortal:/root/qgrp:/root/riichienv \\
     /root/aigc_apps/venv/bin/python3 -m online3p.client \\
-        --url wss://<平台地址> --bot-name Nosam \\
+        --url wss://game.riichi.dev/ws/validate --bot-name Nosam \\
         --qgrp-ckpt /root/qgrp3p_run/qgrp3p_v3_ftb50k.pth --device cuda
-（Nosam / Mason 各起一个进程，同一 riichi.md 取各自 JWT。）
 """
 from __future__ import annotations
 
@@ -40,10 +42,13 @@ from .tokens import load_tokens, token_name
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
+# request_action / 确认 / 终止 / 错误 = 控制帧，不喂 bot；其余按 mjai 事件喂
+_CONTROL = {"request_action", "action_ack", "validation_result", "end_game", "error"}
+_TERMINAL = {"end_game", "validation_result"}
 
-# ── 方言（客户端自持；平台↔bot 拔北命名双向改写）──────────────────────
+
 def _dialect_in(ev: dict) -> dict:
-    """平台事件 → bot：``kita`` → ``nukidora``（Mortal 系 libriichi3p 期望）。"""
+    """平台事件 → bot：`kita` → `nukidora`（Mortal 系 libriichi3p 期望）。"""
     if ev.get("type") == "kita":
         ev = dict(ev)
         ev["type"] = "nukidora"
@@ -51,7 +56,7 @@ def _dialect_in(ev: dict) -> dict:
 
 
 def _dialect_out(act: dict, nukidora_out: str) -> dict:
-    """bot 动作 → 平台：``nukidora`` → ``kita``（nukidora_out='nukidora' 时不改）。"""
+    """bot 动作 → 平台：`nukidora` → `kita`（nukidora_out='nukidora' 时不改）。"""
     if nukidora_out == "kita" and act.get("type") == "nukidora":
         act = dict(act)
         act["type"] = "kita"
@@ -63,39 +68,36 @@ class ClientConfig:
     url: str
     jwt: str
     my_name: str
-    teammates: frozenset
-    # 模型/依赖
     qgrp_ckpt: str
     trans_ckpt: str
     transcore_repo: str
     device: str
-    # 协作权重
     coop_w_self: float = 0.5
     coop_w_third: float = 0.5
-    # 协议旋钮（平台细节边测边调）
-    auth_mode: str = "header"          # header | query | message | none
-    query_key: str = "token"
-    hello_msg: str | None = None       # 连上后先发的原始 JSON（可选握手）
-    nukidora_out: str = "kita"         # 出站拔北写回 kita | nukidora
+    nukidora_out: str = "kita"
     reconnect: bool = True
     reconnect_sec: float = 3.0
-    exit_on_end_game: bool = False
     ping_interval: float = 20.0
 
 
 class OnlineMjaiClient:
-    def __init__(self, cfg: ClientConfig):
+    def __init__(self, cfg: ClientConfig, coop_detector=None):
         self.cfg = cfg
         self.bot = None
         self.my_seat: int | None = None
+        self.pending: str | None = None       # bot 最近一次触发的 mjai 动作 JSON
+        # validate 端点：end_game 后还会发 validation_result（要等它，不能先断）；
+        # ranked：end_game 即收工 → 断开重连（重新排队）。
+        self.is_validate = "validate" in cfg.url
+        # coop_detector(client) -> third_pid|None（默认 None＝纯自己 EV）。
+        # riichi.dev 无玩家身份 → 需侧信道实现，见 README。
+        self.coop_detector = coop_detector
         self._build_engine()
 
-    # ── 日志（走 stderr，不污染协议）────────────────────────────
     def log(self, msg: str) -> None:
         sys.stderr.write(f"[{self.cfg.my_name}] {msg}\n")
         sys.stderr.flush()
 
-    # ── 引擎（模型只载一次，evcalc 跨 game 复用）─────────────────
     def _build_engine(self) -> None:
         try:
             from bot3p.bot import QgrpBot3P
@@ -110,110 +112,135 @@ class OnlineMjaiClient:
             qgrp_ckpt=self.cfg.qgrp_ckpt, trans_ckpt=self.cfg.trans_ckpt,
             transcore_repo=self.cfg.transcore_repo, device=self.cfg.device,
             name=self.cfg.my_name)
-        self.evcalc = EvCalc3P(self.bot_cfg)  # 模型 + trans_core 载入（贵，仅一次）
-        self.log(f"引擎就绪 ckpt={self.cfg.qgrp_ckpt} device={self.cfg.device} "
-                 f"teammates={sorted(self.cfg.teammates)}")
+        self.evcalc = EvCalc3P(self.bot_cfg)   # 模型 + trans_core 只载一次
+        self.log(f"引擎就绪 ckpt={self.cfg.qgrp_ckpt} device={self.cfg.device}")
 
-    # ── 开局：定座位 + 协作判定 + 重建 bot ──────────────────────
+    # ── 开局：定座位 + 重建 bot + 协作判定 ─────────────────────
     def _on_start_game(self, ev: dict) -> None:
-        names = list(ev.get("names") or [])
         seat = ev.get("id")
-        if seat is None:
-            # 平台未给 id（不合标准）：按名字定位，再不行缺省 0
-            seat = names.index(self.cfg.my_name) if self.cfg.my_name in names else 0
-            self.log(f"WARN start_game 无 id，按名字/缺省定座 seat={seat} names={names}")
-        self.my_seat = int(seat)
+        self.my_seat = int(seat) if seat is not None else 0
+        self.pending = None
         self.bot = self._QgrpBot3P(self.my_seat, self.bot_cfg, evcalc=self.evcalc)
-        third = self._detect_third(names)
+        third = None
+        if self.coop_detector is not None:
+            try:
+                third = self.coop_detector(self)
+            except Exception:  # noqa: BLE001
+                self.log("coop_detector 异常：\n" + traceback.format_exc())
         if third is not None:
-            self.evcalc.set_coop(third, self.cfg.coop_w_self, self.cfg.coop_w_third)
-            self.log(f"[coop ON] seat={self.my_seat} names={names} third_seat={third} "
+            self.evcalc.set_coop(int(third), self.cfg.coop_w_self, self.cfg.coop_w_third)
+            self.log(f"[coop ON] seat={self.my_seat} third_seat={third} "
                      f"w=(self {self.cfg.coop_w_self}, third {self.cfg.coop_w_third})")
         else:
             self.evcalc.clear_coop()
-            self.log(f"[coop OFF] seat={self.my_seat} names={names}（队友不在桌）")
+            self.log(f"[coop OFF] seat={self.my_seat}（纯自己 EV）")
 
-    def _detect_third(self, names: list) -> int | None:
-        """同桌判定：names 里有队友（另一个我方 bot 名）则返回第三家座位，否则 None。"""
-        if len(names) != 3 or self.my_seat is None:
-            return None
-        teammate_seat = None
-        for i, nm in enumerate(names):
-            if i != self.my_seat and nm in self.cfg.teammates and nm != self.cfg.my_name:
-                teammate_seat = i
-                break
-        if teammate_seat is None:
-            return None
-        return ({0, 1, 2} - {self.my_seat, teammate_seat}).pop()
+    # ── 喂一个 mjai 事件给 bot（跟踪状态 + 缓存动作）────────────
+    def _feed(self, ev: dict) -> None:
+        ev = _dialect_in(ev)
+        if ev.get("type") == "start_game":
+            self._on_start_game(ev)
+        if self.bot is None:
+            return
+        try:
+            r = self.bot.react(json.dumps(ev, separators=(",", ":")))
+        except Exception:  # noqa: BLE001
+            self.log("react 异常：\n" + traceback.format_exc())
+            r = None
+        if r:
+            self.pending = r
 
-    # ── 一批事件 → 一条 reaction ────────────────────────────────
-    def handle_batch(self, batch: list) -> tuple[dict, bool]:
-        last = None
-        end = False
-        for raw in batch:
-            if not isinstance(raw, dict):
-                continue
-            ev = _dialect_in(raw)
-            et = ev.get("type")
-            if et == "start_game":
-                self._on_start_game(ev)
-            elif et == "end_game":
-                end = True
-            if self.bot is None:
-                continue
-            try:
-                r = self.bot.react(json.dumps(ev, separators=(",", ":")))
-            except Exception:  # noqa: BLE001
-                self.log("react 异常：\n" + traceback.format_exc())
-                r = None
-            if r:
-                last = r
-        if last is None:
-            out = {"type": "none"}
+    # ── request_action → 一条动作 JSON（补 request_id + 合法兜底）─
+    def _on_request_action(self, ev: dict) -> str:
+        if self.pending:
+            act = json.loads(self.pending)
+            act.pop("meta", None)
         else:
-            out = json.loads(last)
-            out.pop("meta", None)
-        return _dialect_out(out, self.cfg.nukidora_out), end
+            act = {"type": "none"}
+        self.pending = None
+        act = _dialect_out(act, self.cfg.nukidora_out)
+        act = self._sanitize(act, ev.get("possible_actions") or [])
+        act["request_id"] = ev.get("request_id")
+        if act.get("type") != "none" and "actor" not in act and self.my_seat is not None:
+            act["actor"] = self.my_seat
+        return json.dumps(act, separators=(",", ":"))
 
-    # ── 单次连接生命周期 ────────────────────────────────────────
+    @staticmethod
+    def _match(act: dict, p: dict) -> bool:
+        if p.get("type") != act.get("type"):
+            return False
+        t = act.get("type")
+        if t == "dahai":
+            return p.get("pai") == act.get("pai")
+        if t in ("pon", "chi", "daiminkan", "kakan", "ankan", "kan", "kita"):
+            return (p.get("pai") == act.get("pai")
+                    and sorted(p.get("consumed", [])) == sorted(act.get("consumed", [])))
+        return True   # reach / hora / none / ryukyoku 等按类型唯一
+
+    def _sanitize(self, act: dict, pas: list) -> dict:
+        """确保动作在服务器合法集内，否则回退（none>dahai>pas[0]）防 chombo。"""
+        if not pas:
+            return act
+        if any(self._match(act, p) for p in pas):
+            return act
+        self.log(f"WARN 动作不在合法集，回退：act={act} "
+                 f"legal_types={[p.get('type') for p in pas]}")
+        for p in pas:
+            if p.get("type") == "none":
+                return dict(p)
+        for p in pas:
+            if p.get("type") == "dahai":
+                return dict(p)
+        return dict(pas[0])
+
+    # ── 单帧分派 ────────────────────────────────────────────
+    def handle_frame(self, ev: dict) -> tuple[str | None, str | None]:
+        et = ev.get("type")
+        if et == "request_action":
+            return self._on_request_action(ev), None
+        if et == "validation_result":
+            self.log(f"validation_result: {json.dumps(ev, ensure_ascii=False)[:300]}")
+            return None, "validation_result"
+        if et == "end_game":
+            self.log(f"end_game: {json.dumps(ev, ensure_ascii=False)[:300]}")
+            self.pending = None
+            # validate 下不作终止（等 validation_result）；ranked 下终止→重连
+            return None, (None if self.is_validate else "end_game")
+        if et == "error":
+            self.log(f"server error: {json.dumps(ev, ensure_ascii=False)[:300]}")
+            return None, None
+        if et == "action_ack":
+            if ev.get("status") not in (None, "accepted"):
+                self.log(f"action_ack 非 accepted：{ev}")
+            return None, None
+        self._feed(ev)   # 其余＝mjai 事件
+        return None, None
+
+    # ── 单次连接生命周期 ────────────────────────────────────
     async def _run_once(self) -> str:
         from websockets.asyncio.client import connect
-        url = self.cfg.url
-        headers = {}
-        if self.cfg.auth_mode == "header":
-            headers["Authorization"] = f"Bearer {self.cfg.jwt}"
-        elif self.cfg.auth_mode == "query":
-            sep = "&" if "?" in url else "?"
-            url = f"{url}{sep}{self.cfg.query_key}={self.cfg.jwt}"
-        async with connect(url, additional_headers=headers,
+        headers = {"Authorization": f"Bearer {self.cfg.jwt}"}
+        async with connect(self.cfg.url, additional_headers=headers,
                             ping_interval=self.cfg.ping_interval,
                             max_size=None) as ws:
-            self.log(f"已连接 {self.cfg.url}（auth={self.cfg.auth_mode}）")
-            if self.cfg.auth_mode == "message":
-                await ws.send(json.dumps({"type": "auth", "token": self.cfg.jwt}))
-            if self.cfg.hello_msg:
-                await ws.send(self.cfg.hello_msg)
+            self.log(f"已连接 {self.cfg.url}")
             async for msg in ws:
+                if isinstance(msg, bytes):
+                    continue
                 try:
                     data = json.loads(msg)
                 except (json.JSONDecodeError, TypeError):
-                    self.log(f"非 JSON 消息，忽略：{str(msg)[:200]!r}")
+                    self.log(f"非 JSON 帧，忽略：{str(msg)[:200]!r}")
                     continue
-                if isinstance(data, list):
-                    batch = data
-                elif isinstance(data, dict) and isinstance(data.get("events"), list):
-                    batch = data["events"]           # {"events":[...]} 信封
-                elif isinstance(data, dict):
-                    batch = [data]                    # 单事件
-                else:
-                    self.log(f"无法识别的消息结构，忽略：{str(data)[:200]}")
-                    continue
-                out, end = self.handle_batch(batch)
-                await ws.send(json.dumps(out, separators=(",", ":")))
-                if end:
-                    self.log(f"收到 end_game（seat={self.my_seat}）")
-                    if self.cfg.exit_on_end_game:
-                        return "exit"
+                frames = data if isinstance(data, list) else [data]
+                for f in frames:
+                    if not isinstance(f, dict):
+                        continue
+                    out, control = self.handle_frame(f)
+                    if out is not None:
+                        await ws.send(out)
+                    if control in _TERMINAL:
+                        return control
             return "closed"
 
     async def run(self) -> None:
@@ -223,23 +250,22 @@ class OnlineMjaiClient:
             except Exception as e:  # noqa: BLE001
                 self.log(f"连接异常：{e!r}")
                 result = "error"
-            if result == "exit" or not self.cfg.reconnect:
+            if result == "validation_result" or not self.cfg.reconnect:
+                self.log(f"结束（{result}），不再重连")
                 break
-            self.log(f"{self.cfg.reconnect_sec}s 后重连…")
+            self.log(f"{result} → {self.cfg.reconnect_sec}s 后重连（重新排队）…")
             await asyncio.sleep(self.cfg.reconnect_sec)
 
 
 def build_config(argv=None) -> ClientConfig:
-    ap = argparse.ArgumentParser(
-        description="qgrp3p 在线对战客户端（MJAI over WebSocket）")
-    ap.add_argument("--url", default=os.environ.get("RIICHI_WS_URL"),
-                    help="平台 WebSocket 地址（或 env RIICHI_WS_URL）")
+    ap = argparse.ArgumentParser(description="qgrp3p riichi.dev 在线对战客户端")
+    ap.add_argument("--url", default=os.environ.get(
+        "RIICHI_WS_URL", "wss://game.riichi.dev/ws/validate"),
+        help="平台 WebSocket 地址（默认 validate；上线用 .../ws/ranked）")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--bot-name", help="从 --tokens-file 按名取 JWT（Nosam/Mason）")
     g.add_argument("--jwt", help="直接给 JWT")
     ap.add_argument("--tokens-file", default=str(_REPO_ROOT / "riichi.md"))
-    ap.add_argument("--teammates", default="Nosam,Mason",
-                    help="我方 bot 名集合（同桌判定用）")
     ap.add_argument("--qgrp-ckpt", default=os.environ.get(
         "QGRP3P_CKPT", "/root/qgrp3p_run/qgrp3p_v3_ftb50k.pth"))
     ap.add_argument("--trans-ckpt", default=os.environ.get(
@@ -249,19 +275,11 @@ def build_config(argv=None) -> ClientConfig:
     ap.add_argument("--device", default=os.environ.get("QGRP3P_DEVICE", "cuda"))
     ap.add_argument("--coop-w-self", type=float, default=0.5)
     ap.add_argument("--coop-w-third", type=float, default=0.5)
-    ap.add_argument("--auth-mode", choices=["header", "query", "message", "none"],
-                    default="header")
-    ap.add_argument("--query-key", default="token")
-    ap.add_argument("--hello-msg", default=None,
-                    help="连上后先发的原始 JSON（可选平台握手）")
     ap.add_argument("--nukidora-out", choices=["kita", "nukidora"], default="kita")
     ap.add_argument("--no-reconnect", action="store_true")
     ap.add_argument("--reconnect-sec", type=float, default=3.0)
-    ap.add_argument("--exit-on-end-game", action="store_true")
     args = ap.parse_args(argv)
 
-    if not args.url:
-        ap.error("必须给 --url 或设 RIICHI_WS_URL")
     if args.jwt:
         jwt = args.jwt
     elif args.bot_name:
@@ -275,19 +293,16 @@ def build_config(argv=None) -> ClientConfig:
 
     return ClientConfig(
         url=args.url, jwt=jwt, my_name=my_name,
-        teammates=frozenset(t.strip() for t in args.teammates.split(",")),
         qgrp_ckpt=args.qgrp_ckpt, trans_ckpt=args.trans_ckpt,
         transcore_repo=args.transcore_repo, device=args.device,
         coop_w_self=args.coop_w_self, coop_w_third=args.coop_w_third,
-        auth_mode=args.auth_mode, query_key=args.query_key,
-        hello_msg=args.hello_msg, nukidora_out=args.nukidora_out,
-        reconnect=not args.no_reconnect, reconnect_sec=args.reconnect_sec,
-        exit_on_end_game=args.exit_on_end_game)
+        nukidora_out=args.nukidora_out,
+        reconnect=not args.no_reconnect, reconnect_sec=args.reconnect_sec)
 
 
 def main(argv=None) -> None:
     cfg = build_config(argv)
-    try:  # 单样本推理限 1 线程（run_stdio 同款纪律）
+    try:
         import torch
         torch.set_num_threads(1)
     except Exception:  # noqa: BLE001

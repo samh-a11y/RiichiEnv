@@ -1,64 +1,63 @@
-# online3p —— qgrp3p 打牌器接入在线对战（标准 MJAI over WebSocket）
+# online3p —— qgrp3p 打牌器接入 riichi.dev / RiichiLab 在线三麻对战
 
-把 qgrp v3 三麻打牌器（`../qgrp/bot3p/`）接进在线三麻对战平台。两个已注册 bot
-**Nosam / Mason**（JWT 见仓根 `riichi.md`，已 gitignore）。
+把 qgrp v3 三麻打牌器（`../qgrp/bot3p/`）接进 **riichi.dev（RiichiLab）** 在线三麻平台。
+两个已注册 bot **Nosam / Mason**（JWT 见仓根 `riichi.md`，已 gitignore）。
 
-## 协议假设（= mjai.app / akagi「标准 MJAI bot」约定，搬到 WebSocket）
-- 连接：默认 `Authorization: Bearer <JWT>` 头（`--auth-mode` 可切 `query`/`message`/`none`）。
-- 平台自动配桌；每条 WS 消息 = 一批 mjai 事件（JSON 数组；亦容忍单事件 dict 或
-  `{"events":[...]}` 信封）；客户端每批回**恰好一条** reaction（无动作 = `{"type":"none"}`）。
-- `start_game.id` = 本座（权威）；`start_game.names` = 三家名。
-- `end_game` 收尾；默认保持连接等下一局（`--exit-on-end-game` 可改）。
-- 方言：平台线 `kita` ↔ bot 侧 `nukidora`，客户端自持双向改写（`--nukidora-out` 控出站）。
+## 真实协议（探针 `/ws/validate` 实测，见 `.claude/sessions/c07.md`）
+- 连接 `wss://game.riichi.dev/ws/{validate,ranked}`，`Authorization: Bearer <JWT>` 头。
+  `/ws/validate` = 待验证 bot（vs 3 个内置 tsumogiri）；`/ws/ranked` = 已激活 bot 排位。
+- 平台自动配桌 + 驱动游戏；每帧 = **单个 JSON 对象**。服务器逐帧下发 mjai 事件
+  （start_game / start_kyoku / tsumo / dahai / kita / pon / kan / reach / hora / end_kyoku…）。
+- bot **只对 `request_action` 帧回复**：一条 mjai 动作 + **回显 `request_id`**
+  （不响应 = `{"type":"none","request_id":N}`）。`request_action` 带：
+  `possible_actions`（合法集，本客户端用作防 chombo 兜底）、base64 `observation`
+  （RiichiEnv 原生状态，**本客户端不用**——状态从 mjai 事件流跟踪）、`time`（预算约 18s）。
+- `start_game` = `{"type":"start_game","id":<座位 0-2>}`，**无 names / 无玩家身份 / 无 game_id**。
+- `action_ack` 确认（含 bank/elapsed_ms）；`end_game` 收工；validate 端点随后发
+  `{"type":"validation_result","passed":true}`。ranked 下 `end_game` 即断开（重连=重新排队）。
+- 拔北 = `kita`（`{"type":"kita","pai":"N"}`）；客户端 `kita↔nukidora` 双向改写。
+- 非法/超时动作 → **chombo（満貫罚）**；本客户端 `possible_actions` 兜底确保永不 chombo。
 
-> ⚠ 平台的真实 endpoint / 鉴权位置 / 消息信封 / 配桌握手以平台文档为准。以上是通用
-> 假设，全部做成 CLI/env 旋钮，上线时对齐即可（见「上线待对齐」）。
+## 架构
+进程内接 qgrp bot3p（`EvCalc3P` 模型 + trans_core 只载一次，跨局复用）：每个 mjai 事件
+喂 `bot.react()` 跟踪状态 + 缓存其触发的动作；`request_action` 到达时发出缓存动作 + 补
+`request_id`，并对 `possible_actions` 做合法性兜底。**不需要 riichienv 包**（纯 MJAI 桥）。
+全在 gpu16b **aigc venv**（torch/libriichi3p/websockets）。
 
-## 协作逻辑（用户设计）
-- 两 bot **未同桌** → 每个 bot 纯最大化自己 pt EV（qgrp v3 原样）。
-- 两 bot **同桌** → 每个 bot 目标 = `0.5·自己 pt_EV + 0.5·(−第三家 pt_EV)`。
-  实现 = 每小局把 `leaf_pt` 换成 `0.5·self − 0.5·third`（`../qgrp/bot3p/ev.py::EvCalc3P.set_coop`；
-  第三家 pt 复用同一次前向的叶分布，零额外前向）。rank-pt `[90,0,−90]` 零和下等价
-  「自己 EV + 0.5·队友 EV」。两 bot 各自从 `start_game.names` 独立判定同桌 + 定位第三家，
-  **无需侧信道**。权重可调（`--coop-w-self` / `--coop-w-third`）。
-
-## 文件
-- `client.py` —— 在线客户端（进程内接 qgrp bot3p，模型只载一次）。**上线入口。**
-- `tokens.py` —— 从 `riichi.md` 按名取 JWT（本地解码 name，不验签）。
-- `mock_server.py` —— RiichiEnv-over-WebSocket mock 平台（测试工具，复刻平台↔客户端 wire 契约）。
-- `test_coop_ev.py` —— 协作 `leaf_pt` 数值核验（coop == 0.5·self−0.5·third）。
-- `_smoke_driver.sh` —— gpu16b 端到端冒烟驱动（mock + Nosam/Mason + dummy 跑半庄）。
+## 状态（2026-07-14）
+- ✅ **真机验证通过**：Nosam / Mason 各连 `/ws/validate`，qgrp v3 打完整局三麻、
+  零 chombo/掉线 → `validation_result: passed`。
+- ⬜ **ranked 上线**：把 `--url` 换成 `wss://game.riichi.dev/ws/ranked` 起两进程（下方）。
+- ⚠ **协作（双 bot 同桌）暂不可自动触发**：见下。
 
 ## 上线跑法（gpu16b）
-每个 bot 一个进程，用 **aigc venv**（有 torch/libriichi3p/websockets），PYTHONPATH 含
-qgrp 仓根 + Mortal3/mortal：
+每个 bot 一个进程，aigc venv + PYTHONPATH 含 qgrp 仓根 + Mortal3/mortal：
 ```bash
 cd /root/riichienv
 PYTHONPATH=/root/Mortal3/mortal:/root/qgrp:/root/riichienv \
 /root/aigc_apps/venv/bin/python3 -m online3p.client \
-    --url wss://<平台地址> --bot-name Nosam \
+    --url wss://game.riichi.dev/ws/ranked --bot-name Nosam \
     --qgrp-ckpt /root/qgrp3p_run/qgrp3p_v3_ftb50k.pth --device cuda
 # 另起一个进程 --bot-name Mason
 ```
+（validate 端点把 url 换成 `.../ws/validate`；validate 默认 `--no-reconnect` 单局即止，
+ranked 默认自动重连＝打完一局重新排队。）
 
-## 本地冒烟（无需真实平台；gpu16b）
-mock 用**仓库 .venv**（有 riichienv），客户端用 aigc venv：
-```bash
-cd /root/riichienv
-# 协作（2 真实 bot + dummy 第三家）
-setsid nohup bash online3p/_smoke_driver.sh 2 1 100 8903 >/dev/null 2>&1 &
-# 独自（1 真实 bot + 2 dummy → coop OFF）
-setsid nohup bash online3p/_smoke_driver.sh 1 1 100 8904 >/dev/null 2>&1 &
-# 结果看 online3p/_smoke/{mock,nosam,mason}.log
-```
-已验证（2026-07-14）：协作桌 Nosam/Mason 均 `coop ON` 定位第三家=dummy，186 步整半庄
-零 select 失配，第三家被压到垫底；独自桌 `coop OFF`。协作 `leaf_pt` 数值 `max|err|=0`。
+## 协作（用户设计）现状与限制
+协作 EV 已就绪且数值精确（`../qgrp/bot3p/ev.py::EvCalc3P.set_coop`：同桌时每小局
+`leaf_pt = 0.5·自己 − 0.5·第三家`，rank-pt 零和下 = 自己 EV + 0.5·队友 EV）。
+**但 riichi.dev 协议不暴露任何玩家身份 / 对局 ID**（`start_game` 只有座位号，observation 只有
+牌局状态）——所以一个 bot **无法从协议数据判定队友是否在同桌**。因此：
+- `client.py` 的 `coop_detector` 钩子默认 `None`＝纯自己 EV（= 未同桌行为）。
+- 要触发协作，需**侧信道**（两 bot 都是本机进程）：各自把「本局公开状态指纹」
+  （dora 指示 + scores + honba + kyoku + 公开牌河）写到共享目录，指纹一致且座位不同 ⇒ 同桌，
+  第三家 = 剩下那个座位 → `set_coop`。属启发式（指纹碰撞极低），**待用户确认是否要做**
+  （另注：在排位对他人 bot 用双账号协作压制第三家＝合谋，是否符合平台规则请先确认）。
 
-## 上线待对齐（真实平台）
-1. **endpoint**：`--url wss://…`（现无，等平台给）。
-2. **鉴权位置**：默认 header Bearer；若平台走 query（`?token=`）或首消息登录，用
-   `--auth-mode query`/`--auth-mode message`（或 `--hello-msg '<json>'` 自定握手）。
-3. **消息信封**：默认裸数组/裸事件/`{"events":[…]}`；若平台包了别的外层，改 `client.py`
-   `_run_once` 里的解包分支。
-4. **配桌**：默认「连上即自动配桌，平台推 start_game」；若需先发 join/ready，用 `--hello-msg`。
-5. **拔北命名**：默认出站写回 `kita`；若平台本就收 `nukidora`，`--nukidora-out nukidora`。
+## 文件
+- `client.py` —— riichi.dev 在线客户端（**上线入口**）。
+- `tokens.py` —— 从 `riichi.md` 按名取 JWT。
+- `probe_riichidev.py` —— 协议探针（连真实 `/ws/validate` 原样记录每帧，拿 ground truth）。
+- `test_coop_ev.py` —— 协作 `leaf_pt` 数值核验（coop == 0.5·self−0.5·third，仍有效）。
+- `mock_server.py` / `_smoke_driver.sh` —— ⚠ **旧「mjai.app batch」假设的离线 mock，已被
+  真机 `/ws/validate` 验证取代**（真实 riichi.dev 非 batch 协议）；保留仅作离线 gameplay 参考。
