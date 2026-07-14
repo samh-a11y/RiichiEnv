@@ -17,6 +17,9 @@
 
 详细规格、续点、DoD 见 **`.claude/specs/change-001-3way-arena.md`**。
 
+## 🆕 在线对战接入（change-003，2026-07-14）
+把 `../qgrp` v3 三麻打牌器接进**在线对战平台**（标准 MJAI over WebSocket），两个已注册 bot **Nosam / Mason**（JWT 在仓根 `riichi.md`，gitignore），权重 gpu16b `qgrp3p_v3_ftb50k.pth`。**双 bot 协作**：未同桌→最大化自己 EV；同桌→`0.5·自己 EV + 0.5·(−第三家 EV)`。代码在 `online3p/`（`client.py` 上线入口 + `mock_server.py` 测试用 mock 平台），协作 EV 在 qgrp `bot3p/ev.py::set_coop`。**代码+离线 mock 验证全绿，等平台 endpoint 上线**。详见 `.claude/specs/change-003-online-3p.md` + `online3p/README.md`。
+
 ## 🔴 跨会话工作协议（每个会话必读必做）
 1. **开工先读**：`.claude/STATUS.md`（当前进度/下一步）→ 需要背景查 `.claude/PROJECT.md`（目标/约束）、`.claude/RESOURCES.md`（三模型资产/RiichiEnv 接口/环境）。要动接入代码先看相关 `.claude/specs/`。
 2. **收工前更新** `.claude/STATUS.md`：本会话详情写进新的 `.claude/sessions/c<下一编号>.md`，在 STATUS「会话日志」补一行（一句话 + `[详情]` 链接），刷新「当前状态/下一步」；主题在 `sessions/INDEX.md` 追加 `cNN`。

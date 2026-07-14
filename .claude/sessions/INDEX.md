@@ -16,3 +16,6 @@
 | gpu-16 部署 + 服务器环境铁律（aigc 3.12，别空白 python3.10） | c05（commit 3798431；CLAUDE.md + 记忆） |
 | change-002 第二测试任务（2×joint-mse vs 1×v8guard 复式 30k） | c06（接入 build_v8guard_bot 复刻同事 guard + 2v1 轮转） |
 | 接入等价性验证（牌谱去原版模型 review 一致率 100%） | c06（gen_tapes/replay_truth + guard 压测 + helper 穷举对拍） |
+| change-003 qgrp v3 接入在线对战（MJAI over WebSocket） | c07（online3p 客户端 + mock 平台 + 端到端冒烟全绿） |
+| 双 bot 协作 EV（同桌 0.5·self−0.5·third；qgrp ev.py set_coop） | c07（数值 max\|err\|=0 + mock coop ON/OFF 两分支） |
+| 在线对战环境坑（aigc venv riichienv 空 namespace，真 riichienv 在仓 .venv） | c07 |

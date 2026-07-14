@@ -14,3 +14,7 @@ mjsoul-parser
 arena3p/engines/_pkgs/
 # arena3p：大样本对战的 mjai 日志 + summary（量大，勿入库）
 arena3p/eval_runs/
+# online3p：平台 bot JWT（长期有效凭证，绝不入库）
+riichi.md
+# online3p：冒烟运行产物（日志/DONE 标记）
+online3p/_smoke/
