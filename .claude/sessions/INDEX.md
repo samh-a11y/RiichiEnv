@@ -19,3 +19,4 @@
 | change-003 qgrp v3 接入在线对战（MJAI over WebSocket） | c07（online3p 客户端 + mock 平台 + 端到端冒烟全绿） |
 | 双 bot 协作 EV（同桌 0.5·self−0.5·third；qgrp ev.py set_coop） | c07（数值 max\|err\|=0 + mock coop ON/OFF 两分支） |
 | 在线对战环境坑（aigc venv riichienv 空 namespace，真 riichienv 在仓 .venv） | c07 |
+| 真机 ankan 兜底误判非法回退（服务器合法集带冗余 pai / `_match` 镜像 select_action） | c08（`_match` ankan/kita 只比 consumed + `test_action_match.py`） |

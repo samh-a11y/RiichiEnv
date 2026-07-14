@@ -217,14 +217,24 @@ class OnlineMjaiClient:
 
     @staticmethod
     def _match(act: dict, p: dict) -> bool:
+        # 镜像服务器 select_action（riichienv-core observation/mjai_select.rs）的接受逻辑，
+        # 否则合法动作会被兜底误判非法而回退。
         if p.get("type") != act.get("type"):
             return False
         t = act.get("type")
         if t == "dahai":
             return p.get("pai") == act.get("pai")
         if t in ("pon", "chi", "daiminkan", "kakan", "ankan", "kan", "kita"):
-            return (p.get("pai") == act.get("pai")
-                    and sorted(p.get("consumed", [])) == sorted(act.get("consumed", [])))
+            # consumed 唯一确定一次副露（含 aka）——服务器按 consumed 匹配。
+            if sorted(p.get("consumed", [])) != sorted(act.get("consumed", [])):
+                return False
+            # pai 只对 chi/pon/daiminkan/kakan 二次校验（且需两侧都给）。ankan/kita 服务器
+            # 不看 pai：服务器合法集里的 ankan 带「冗余」pai（Rust to_mjai 见 tile=Some 就插
+            # pai），而标准 mjai / qgrp bot 的 ankan 不带 pai——旧逻辑一比 pai 就把每次暗杠
+            # 误判非法→回退打牌（真机 Nosam 日志实证）。
+            if t in ("pon", "chi", "daiminkan", "kakan") and p.get("pai") and act.get("pai"):
+                return p.get("pai") == act.get("pai")
+            return True
         return True   # reach / hora / none / ryukyoku 等按类型唯一
 
     def _sanitize(self, act: dict, pas: list) -> dict:

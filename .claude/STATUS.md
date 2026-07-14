@@ -3,9 +3,10 @@
 > 维护约定：本文件只放「当前状态 / 产物 / 下一步 / 待决」这类会变的事实。
 > 会话日志只做索引：每个 session 一行（日期 + 一句话 + 链接），详情写进 `sessions/cNN.md`。
 
-## 当前阶段（2026-07-14）：**change-003 qgrp v3 接入 riichi.dev 在线三麻——核心真机验证通过（两 bot validation passed），协作触发待用户定**
+## 当前阶段（2026-07-14）：**change-003 qgrp v3 接入 riichi.dev 在线三麻——已本机 4070 ranked 上线 + coop 默认开；c08 修掉真机 ankan 误判非法回退的兜底 bug（待 live 重启生效）**
 
-### change-003（c07）：qgrp v3 接入 riichi.dev 在线三麻对战 ✅ 真机验证通过，⬜ ranked 上线 + 协作触发待定
+### change-003（c07/c08）：qgrp v3 接入 riichi.dev 在线三麻对战 ✅ 真机验证通过，✅ ranked 上线，🐛 c08 修 ankan 兜底误判
+- **🐛 c08 修复（真机 ranked 日志暴露）**：`_sanitize` 每次把合法的 **ankan 误判非法回退成打牌**（少一番/宝牌指示牌不翻）。根因：服务器合法集里 ankan 带**冗余 `pai`**（`legal_actions` 用 `tile=Some` → `to_mjai` 插 pai），bot/标准 mjai 的 ankan **不带 pai**，旧 `_match` 比 pai 恒不中。服务器收无 pai 的 ankan 是接受的（`mjai_select.rs` 对 ankan 只按 consumed 匹配、pai 二次校验仅 chi/pon/daiminkan/kakan）⇒ **纯客户端兜底 bug，无需给出站 ankan 补 pai**。修法：`_match` 镜像服务器逻辑——ankan/kita 只比 `consumed`。回归测试 `online3p/test_action_match.py`（9/9 PASS）。⚠ **live 进程仍跑旧码，需 `live_stop→live_start` 重载才生效**。详见 `sessions/c08.md`。
 - **任务**：`../qgrp` v3 打牌器接进 **riichi.dev / RiichiLab** 在线三麻；两平台 bot **Nosam/Mason**（JWT 在仓根 `riichi.md`，gitignore）；权重 **qgrp3p_v3_ftb50k.pth**。协作（用户设计）：未同桌→最大化自己 EV；同桌→`0.5·自己 + 0.5·(−第三家)`（= 自己 EV + 0.5·队友 EV）。
 - **真实协议（探针 `/ws/validate` 实测，非先前 batch 假设）**：`wss://game.riichi.dev/ws/{validate,ranked}` + Bearer；**每帧单 JSON**，逐帧 mjai 事件，bot **只对 `request_action` 回**且回显 `request_id`；`request_action` 带 `possible_actions`（防 chombo 兜底）+ base64 `observation`（不用，状态从事件流跟踪）；`start_game` **只有座位 id，无 names/身份/game_id**；`end_game` 后 validate 发 `validation_result`、ranked 断开重连；拔北=`kita`；非法/超时=chombo。
 - **产物**：`online3p/`（`client.py` 真实协议上线入口=进程内接 qgrp bot3p、模型只载一次、逐帧喂 react 缓存动作、request_action 补 request_id、possible_actions 兜底、kita↔nukidora；`probe_riichidev.py` 协议探针；`tokens.py`/`test_coop_ev.py`；`mock_server.py`/`_smoke_driver.sh` 为旧 batch 假设的 mock，已被真机取代）+ qgrp `bot3p/ev.py::set_coop`（additive 默认关，同步 gpu16b）。
@@ -46,6 +47,7 @@
 
 ## 下一步
 ### change-003（本机 4070 已部署上线 + coop 默认开）
+0. **🐛 c08 ankan 修复需重启生效**：`bash online3p/live_stop.sh`（优雅停，打完当前局）→ `bash online3p/live_start.sh` 让 live 进程重载修好的 `client.py`。重启后关注日志里 `WARN 动作不在合法集` 是否消失（该杠正常出杠）。
 1. **运维**：本机 `bash online3p/live_start.sh` 起 / `bash online3p/live_stop.sh` 优雅停（打完当前对局、同停）/ `--force` 强停。日志 `online3p/_live/{Nosam,Mason}.log`。⚠ 别在 gpu16b 同时跑（同 token 双连冲突）。
 2. **持续观察**：同桌局 `[coop ON] third_seat=N`；关注 rating、有无 chombo/掉线、协作效果（第三家是否被压制）。
 3. ✅ **真机同桌"两 bot 均 coop ON"已 live 确认**（捕到一局：Nosam 座0/Mason 座1 均 third_seat=2、指纹一致；竞态修复现场生效——Nosam 首局漏后 E2 重查命中）。全链路真机闭合。push 前先问用户（本会话已 commit 未 push）。
@@ -74,3 +76,4 @@
 - 2026-06-30 · c05 · 步骤5 座位轮转复式：部署 gpu-16（aigc 3.12 真环境，踩 rust1.92坏toolchain/老pip--group 坑后定铁律入 CLAUDE.md），run_eval 加 --rotate+--resume，跑 joint/community/v8 12000 局复式得真实强弱 **joint>v8>community（极接近）**。[详情](sessions/c05.md)
 - 2026-06-30 · c06 · change-002 第二测试任务：2×joint-mse(3p-mse-v1.1) vs 1×v8guard(同事 guard 完整版) 接入（build_v8guard_bot 复刻 SanmaV8GuardEngine + joint 权重参数化 + 2v1 轮转 + review 工具）+ **等价性 review 100% PASS**（牌谱去两模型原版重放：6739 实战 + 6690 压测 + 335449 helper 全等）→ gpu-16 跑 30k。[详情](sessions/c06.md)
 - 2026-07-14 · c07 · change-003 qgrp v3 接入 **riichi.dev** 在线三麻：探针实测真实协议（单帧 mjai + request_action/request_id + 无玩家身份）→ 重写 `online3p/client.py`（纯 MJAI 桥、aigc venv、possible_actions 防 chombo）+ qgrp `ev.py::set_coop`；**Nosam/Mason 真机 `/ws/validate` 均 passed**；协作触发受限于平台无身份/game_id（需侧信道，待用户定）。[详情](sessions/c07.md)
+- 2026-07-14 · c08 · 真机 ranked 日志暴露 **ankan 被兜底误判非法回退打牌**：读 Rust 源定根因（服务器合法集 ankan 带冗余 pai / bot 不带，`_match` 比 pai 恒不中；服务器收无 pai ankan 按 consumed 接受 ⇒ 纯客户端 bug）→ `_match` 镜像服务器 `select_action`（ankan/kita 只比 consumed）+ 回归测试 `test_action_match.py` 9/9 PASS。⚠ 待 live 重启生效。[详情](sessions/c08.md)
