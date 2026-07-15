@@ -102,10 +102,13 @@ EV(动作) = Σ_leaf w_leaf · [ Σ_r P(名次=r|leaf)·rank_pts[r]   ← 名次
 
 - **standalone bot（`../qgrp/bot3p/run_stdio.py`）已有 CLI**：`--rank-pts 90,10,-100`、`--pt-per-1000 0.3`、
   `--tsumo-bonus-pt`、`--yakuman-bonus-pt`、`--nagashi-bonus-pt`。
-- **本客户端（`client.py` / `live_start.sh`）目前只吃默认值**——`_build_engine` 造 `BotConfig3P` 只传
-  ckpt/trans/repo/device/name，pt 字段全走默认 `(90,0,-90)`/`0.0`。**要调真机 ranked bot**：改
-  `../qgrp/bot3p/config.py` 里 `BotConfig3P` 的默认值（`live_stop`→`live_start` 重启生效），或把上述 CLI
-  接进 online3p（`ClientConfig`+argparse+`_build_engine` 传参+`live_start.sh`，尚未做，需要时再加）。
+- **本客户端（`client.py`）已接通同名 CLI**：`--rank-pts 90,10,-100`、`--pt-per-1000 0.3`、
+  `--tsumo-bonus-pt`、`--yakuman-bonus-pt`、`--nagashi-bonus-pt`（不给=`BotConfig3P` 默认，单一真源）。
+- **`live_start.sh` 透传任意 client flag**：脚本名后面接的 flag 原样转发给两 bot（同参），如
+  `bash online3p/live_start.sh --coop-w-third 0.4 --pt-per-1000 0.3 --level 4.0 --aggr 17.4`
+  （⚠ 别透传 `--bot-name`/`--url`——bot 名由脚本设、URL 用 `RIICHI_URL` env，否则撞 token 双连；
+  `LEVEL=`/`AGGR=` env 仍可用，命令行 flag 优先）。生效值全打在**引擎就绪日志**（`level/aggr | pt:
+  rank_pts/pt_per_1000/bonus | coop(self/third)`），`live_stop`→`live_start` 重启后据此确认。
 - ⚠ 与协作权重 `--coop-w-self/--coop-w-third`（上一节）是**两组独立**旋钮：前者调「名次 vs 素点」的口径，
   后者调「自己 vs 压第三家」的协作强度。
 - ⚠ 另与 arena **评测报告**口径 `REPORT_PTS`（`arena3p/stat_report.py` 的 avg_pt 顺位点 + 单列素点）是两码事：
@@ -121,7 +124,6 @@ profile，让它针对性调整打法去剥削对手**。编码在 aux `AUX_LEVE
   （`BOT_LEVEL`/`BOT_AGGR`，= 自产谱口径，对手 Mortal 系）。归一化：aux 里 `level/10`、`aggr/20`
   （量级 level~0-10、aggr~0-20）。config 注释另给 **H 凤桌口径 `--level 7.5 --aggr 13`**。
 - `live_start.sh` env 透传：`LEVEL=7.5 AGGR=13 bash online3p/live_start.sh`（不设=默认）。
-- 引擎就绪日志会打印生效值：`引擎就绪 … level=8.0 aggr=12.0（剥削旋钮）`，重启后据此确认。
 - ⚠ 三家同值＝**没有「自家 vs 对手」分别设**的能力（要分座建模得改编码器 + 重训）。
 
 ## 文件

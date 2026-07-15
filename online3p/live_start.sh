@@ -3,6 +3,9 @@
 # 用法：bash online3p/live_start.sh          # 上 ranked
 #      RIICHI_URL=.../ws/validate bash online3p/live_start.sh   # 改端点（调试）
 #      LEVEL=7.5 AGGR=13 bash online3p/live_start.sh   # 剥削旋钮（不设=默认 8.0/12.0）
+#      # 脚本名后面的任意 client.py flag 都透传给两 bot（Nosam+Mason 同参），如：
+#      bash online3p/live_start.sh --coop-w-third 0.4 --pt-per-1000 0.3 --level 4.0 --aggr 17.4
+#      # ⚠ 别透传 --bot-name/--url：bot 名由脚本设、URL 用 RIICHI_URL env（否则撞 token 双连）
 set -u
 cd "$(dirname "$0")/.." || exit 1        # riichienv 仓根
 REPO=$(pwd)
@@ -29,6 +32,15 @@ RAW=${RIICHI_RAW:-0}
 STYLE=()
 [ -n "${LEVEL:-}" ] && STYLE+=(--level "$LEVEL")
 [ -n "${AGGR:-}" ] && STYLE+=(--aggr "$AGGR")
+# 透传：脚本名后面的任意 client.py flag（如 --pt-per-1000/--rank-pts/--coop-w-third/
+# --level/--aggr）原样转发给两 bot（同参）。挡 --bot-name/--url——它们由脚本/RIICHI_URL 定，
+# 若透传会让两 bot 撞同一名字/URL 而 token 双连。命令行 > env（同名 flag argparse 取靠后者）。
+for a in "$@"; do
+  case "$a" in
+    --bot-name|--bot-name=*|--url|--url=*)
+      echo "别透传 $a：bot 名由脚本设、URL 用 RIICHI_URL env（否则撞 token 双连）"; exit 1;;
+  esac
+done
 for BOT in Nosam Mason; do
   RAWENV=()
   if [ "$RAW" = "1" ]; then
@@ -38,7 +50,7 @@ for BOT in Nosam Mason; do
   setsid nohup env PYTHONPATH="$PP" "${RAWENV[@]}" "$PY" -m online3p.client \
     --url "$URL" --bot-name "$BOT" \
     --qgrp-ckpt "$CK" --trans-ckpt "$TRANS" --transcore-repo "$TCREPO" \
-    --device cuda "${STYLE[@]}" > "$LOG/$BOT.log" 2>&1 < /dev/null &
+    --device cuda "${STYLE[@]}" "$@" > "$LOG/$BOT.log" 2>&1 < /dev/null &
   echo "$BOT 已启动 → $LOG/$BOT.log${RAWENV:+ (raw→$LOG/$BOT.frames.jsonl)}"
 done
 echo ""

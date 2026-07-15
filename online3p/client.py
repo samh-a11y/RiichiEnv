@@ -93,6 +93,13 @@ class ClientConfig:
     # 针对性调整打法）。None＝用 BotConfig3P 默认（自产谱口径 level=8.0/aggr=12.0）。
     level: float | None = None
     aggr: float | None = None
+    # pt 目标函数旋钮（打牌倾向，README「pt 目标函数」一节）。全 None＝BotConfig3P 默认
+    # （rank_pts=(90,0,-90) 纯名次、pt_per_1000=0、无加成）。rank_pts 只差值有意义。
+    rank_pts: tuple | None = None
+    pt_per_1000: float | None = None
+    tsumo_bonus_pt: float | None = None
+    yakuman_bonus_pt: float | None = None
+    nagashi_bonus_pt: float | None = None
     nukidora_out: str = "kita"
     reconnect: bool = True
     reconnect_sec: float = 0.0        # 正常 end_game 后重连（重新排队）延迟——默认 0=立即
@@ -189,15 +196,26 @@ class OnlineMjaiClient:
             qgrp_ckpt=self.cfg.qgrp_ckpt, trans_ckpt=self.cfg.trans_ckpt,
             transcore_repo=self.cfg.transcore_repo, device=self.cfg.device,
             name=self.cfg.my_name)
-        # 未指定＝走 BotConfig3P 默认（单一真源，不在此硬编码 8.0/12.0）
+        # 未指定＝走 BotConfig3P 默认（单一真源，不在此硬编码默认值）
         if self.cfg.level is not None:
             cfg_kw["level"] = self.cfg.level
         if self.cfg.aggr is not None:
             cfg_kw["aggr"] = self.cfg.aggr
+        for k in ("rank_pts", "pt_per_1000", "tsumo_bonus_pt",
+                  "yakuman_bonus_pt", "nagashi_bonus_pt"):
+            v = getattr(self.cfg, k)
+            if v is not None:
+                cfg_kw[k] = v
         self.bot_cfg = BotConfig3P(**cfg_kw)
         self.evcalc = EvCalc3P(self.bot_cfg)   # 模型 + trans_core 只载一次
         self.log(f"引擎就绪 ckpt={self.cfg.qgrp_ckpt} device={self.cfg.device} "
-                 f"level={self.bot_cfg.level} aggr={self.bot_cfg.aggr}（剥削旋钮）")
+                 f"level={self.bot_cfg.level} aggr={self.bot_cfg.aggr}（剥削旋钮）"
+                 f" | pt: rank_pts={self.bot_cfg.rank_pts} "
+                 f"pt_per_1000={self.bot_cfg.pt_per_1000} "
+                 f"bonus(tsumo/yakuman/nagashi)="
+                 f"{self.bot_cfg.tsumo_bonus_pt}/{self.bot_cfg.yakuman_bonus_pt}/"
+                 f"{self.bot_cfg.nagashi_bonus_pt}"
+                 f" | coop(self/third)={self.cfg.coop_w_self}/{self.cfg.coop_w_third}")
 
     # ── 开局：定座位 + 重建 bot（协作在 start_kyoku 判定）─────────
     def _on_start_game(self, ev: dict) -> None:
@@ -429,6 +447,15 @@ def build_config(argv=None) -> ClientConfig:
                     help="aux 水平条件（剥削旋钮，train-003 §2；不给=默认 8.0=自产谱口径）")
     ap.add_argument("--aggr", type=float, default=None,
                     help="aux 激进度条件（同 --level；不给=默认 12.0）")
+    # pt 目标函数（打牌倾向，README「pt 目标函数」一节；命名对齐 run_stdio.py）。
+    # 不给=BotConfig3P 默认（纯名次 rank_pts=90,0,-90 / pt_per_1000=0）。
+    ap.add_argument("--rank-pts", dest="rank_pts", default=None,
+                    help="逗号分隔 1~3 位 pt（如 90,10,-100 防三；只差值有意义）")
+    ap.add_argument("--pt-per-1000", dest="pt_per_1000", type=float, default=None,
+                    help="每 1000 素点折 pt（0=纯名次；略贪 0.1~0.5，尺度警告见 README）")
+    ap.add_argument("--tsumo-bonus-pt", dest="tsumo_bonus_pt", type=float, default=None)
+    ap.add_argument("--yakuman-bonus-pt", dest="yakuman_bonus_pt", type=float, default=None)
+    ap.add_argument("--nagashi-bonus-pt", dest="nagashi_bonus_pt", type=float, default=None)
     ap.add_argument("--coop-w-self", type=float, default=0.5)
     ap.add_argument("--coop-w-third", type=float, default=0.5)
     ap.add_argument("--nukidora-out", choices=["kita", "nukidora"], default="kita")
@@ -465,6 +492,12 @@ def build_config(argv=None) -> ClientConfig:
         transcore_repo=args.transcore_repo, device=args.device,
         coop_w_self=args.coop_w_self, coop_w_third=args.coop_w_third,
         level=args.level, aggr=args.aggr,
+        rank_pts=(tuple(float(x) for x in args.rank_pts.split(","))
+                  if args.rank_pts else None),
+        pt_per_1000=args.pt_per_1000,
+        tsumo_bonus_pt=args.tsumo_bonus_pt,
+        yakuman_bonus_pt=args.yakuman_bonus_pt,
+        nagashi_bonus_pt=args.nagashi_bonus_pt,
         nukidora_out=args.nukidora_out,
         reconnect=not args.no_reconnect, reconnect_sec=args.reconnect_sec,
         reconnect_backoff_sec=args.reconnect_backoff_sec,
