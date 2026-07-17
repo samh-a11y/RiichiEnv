@@ -87,6 +87,10 @@ class ClientConfig:
     trans_ckpt: str
     transcore_repo: str
     device: str
+    # 打牌器后端：qgrp（EvCalc3P + trans_core，支持 coop/level/pt 旋钮）或
+    # mortal3（Mortal3 原生 Brain/DQN，greedy argmax Q = mse-best；EV/coop 旋钮不适用）
+    backend: str = "qgrp"
+    mortal_ckpt: str = ""          # backend=mortal3 权重（mortal3p-msebest）
     coop_w_self: float = 0.5
     coop_w_third: float = 0.5
     # 剥削旋钮（aux 水平/激进度条件，train-003 §2；三家同值＝告诉模型对手 profile，模型
@@ -183,6 +187,9 @@ class OnlineMjaiClient:
         sys.stderr.flush()
 
     def _build_engine(self) -> None:
+        if self.cfg.backend == "mortal3":
+            self._build_mortal3_engine()
+            return
         try:
             from bot3p.bot import QgrpBot3P
             from bot3p.config import BotConfig3P
@@ -217,13 +224,56 @@ class OnlineMjaiClient:
                  f"{self.bot_cfg.nagashi_bonus_pt}"
                  f" | coop(self/third)={self.cfg.coop_w_self}/{self.cfg.coop_w_third}")
 
+    def _build_mortal3_engine(self) -> None:
+        """Mortal3 原生 3p 后端——镜像 arena3p/engines/mjai_runner.py::build_joint_bot
+        的加载（Brain/DQN + MortalEngine），去掉末尾 Bot(engine,seat)（改为每局在
+        _on_start_game 建）。greedy argmax（boltzmann_epsilon=0）＝ mse-best。无
+        EvCalc/trans_core/coop（EV/level/pt 旋钮对本后端不适用）。PYTHONPATH 需含
+        Mortal3/mortal（model/engine/libriichi3p.so）——live 启动脚本已设。"""
+        try:
+            import torch
+            from model import Brain, DQN
+            from engine import MortalEngine
+            from libriichi3p.mjai import Bot
+        except ImportError as e:  # noqa: BLE001
+            raise SystemExit(
+                "import Mortal3 失败——PYTHONPATH 需含 Mortal3/mortal"
+                "（model/engine/libriichi3p.so）。\n"
+                f"  详细：{e}")
+        if not self.cfg.mortal_ckpt:
+            raise SystemExit("backend=mortal3 需 --mortal-ckpt（mortal3p-msebest 权重）")
+        self._MortalBot = Bot
+        use_cuda = self.cfg.device == "cuda" and torch.cuda.is_available()
+        dev = torch.device("cuda" if use_cuda else "cpu")
+        state = torch.load(self.cfg.mortal_ckpt, weights_only=True, map_location="cpu")
+        mcfg = state["config"]
+        version = mcfg["control"].get("version", 1)
+        num_blocks = mcfg["resnet"]["num_blocks"]
+        conv_channels = mcfg["resnet"]["conv_channels"]
+        mortal = Brain(version=version, num_blocks=num_blocks,
+                       conv_channels=conv_channels).eval()
+        dqn = DQN(version=version).eval()
+        mortal.load_state_dict(state["mortal"])
+        dqn.load_state_dict(state["current_dqn"])
+        self.engine = MortalEngine(
+            mortal, dqn, version=version, is_oracle=False, device=dev,
+            enable_amp=False, enable_quick_eval=True,
+            enable_rule_based_agari_guard=True, name=self.cfg.my_name)
+        self.evcalc = None
+        self.log(f"引擎就绪(mortal3) ckpt={self.cfg.mortal_ckpt} device={dev} "
+                 f"version={version} blocks={num_blocks} ch={conv_channels}"
+                 f"（greedy Q=mse-best；coop/level/pt 旋钮不适用）")
+
     # ── 开局：定座位 + 重建 bot（协作在 start_kyoku 判定）─────────
     def _on_start_game(self, ev: dict) -> None:
         seat = ev.get("id")
         self.my_seat = int(seat) if seat is not None else 0
         self.pending = None
-        self.bot = self._QgrpBot3P(self.my_seat, self.bot_cfg, evcalc=self.evcalc)
-        self.evcalc.clear_coop()   # 新局先复位；同桌与否在 start_kyoku 定
+        if self.cfg.backend == "mortal3":
+            self.bot = self._MortalBot(self.engine, self.my_seat)  # 每局重建 Bot，引擎复用
+        else:
+            self.bot = self._QgrpBot3P(self.my_seat, self.bot_cfg, evcalc=self.evcalc)
+            self.evcalc.clear_coop()   # 新局先复位；同桌与否在 start_kyoku 定
         self._coop_third = None    # 每局重置：同桌判定基于本局指纹
         self._game_fp = None
         self._coop_attempts = 0
@@ -442,6 +492,13 @@ def build_config(argv=None) -> ClientConfig:
     ap.add_argument("--transcore-repo", default=os.environ.get(
         "QGRP3P_TRANSCORE_REPO", "/root/zeroppo-grp"))
     ap.add_argument("--device", default=os.environ.get("QGRP3P_DEVICE", "cuda"))
+    # 后端：qgrp（默认）或 mortal3（Mortal3 原生 Brain/DQN，mse-best greedy Q）
+    ap.add_argument("--backend", choices=["qgrp", "mortal3"], default="qgrp",
+                    help="打牌器后端：qgrp（EvCalc/trans_core）或 mortal3（原生 Q=mse-best）")
+    ap.add_argument("--mortal-ckpt", dest="mortal_ckpt", default=os.environ.get(
+        "MORTAL3_CKPT",
+        "/home/administrator/Mortal3/train/sl3p-online-mse/ckpt/mortal-80000.pth"),
+        help="backend=mortal3 权重（默认 mortal3p-msebest = mortal-80000.pth md5 d02d8c6f）")
     # 剥削旋钮（aux 水平/激进度条件；三家同值＝对手 profile）。默认不覆盖＝BotConfig3P 默认 8.0/12.0
     ap.add_argument("--level", type=float, default=None,
                     help="aux 水平条件（剥削旋钮，train-003 §2；不给=默认 8.0=自产谱口径）")
@@ -486,10 +543,16 @@ def build_config(argv=None) -> ClientConfig:
         ap.error("需要 --bot-name 或 --jwt")
     my_name = token_name(jwt) or (args.bot_name or "qgrp3p")
 
+    # mortal3 后端无 EV 混合 ⇒ coop 无意义，强制关（否则 _on_start_kyoku 会碰 None evcalc）
+    coop_enabled = args.coop_enabled and args.backend != "mortal3"
+    if args.coop_enabled and args.backend == "mortal3":
+        sys.stderr.write("[cfg] backend=mortal3：coop 不适用（原生 Q 无 EV 混合），已自动关\n")
+
     return ClientConfig(
         url=args.url, jwt=jwt, my_name=my_name,
         qgrp_ckpt=args.qgrp_ckpt, trans_ckpt=args.trans_ckpt,
         transcore_repo=args.transcore_repo, device=args.device,
+        backend=args.backend, mortal_ckpt=args.mortal_ckpt,
         coop_w_self=args.coop_w_self, coop_w_third=args.coop_w_third,
         level=args.level, aggr=args.aggr,
         rank_pts=(tuple(float(x) for x in args.rank_pts.split(","))
@@ -501,7 +564,7 @@ def build_config(argv=None) -> ClientConfig:
         nukidora_out=args.nukidora_out,
         reconnect=not args.no_reconnect, reconnect_sec=args.reconnect_sec,
         reconnect_backoff_sec=args.reconnect_backoff_sec,
-        coop_enabled=args.coop_enabled, coop_dir=args.coop_dir,
+        coop_enabled=coop_enabled, coop_dir=args.coop_dir,
         teammates=tuple(t.strip() for t in args.teammates.split(",")),
         coop_wait_sec=args.coop_wait_sec, stop_file=args.stop_file)
 
