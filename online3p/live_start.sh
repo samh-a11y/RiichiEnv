@@ -10,8 +10,8 @@ set -u
 cd "$(dirname "$0")/.." || exit 1        # riichienv 仓根
 REPO=$(pwd)
 PY=$HOME/miniconda3/envs/mortal/bin/python
-PP=$HOME/Mortal3/mortal:$HOME/qgrp:$REPO
-CK=$HOME/qgrp3p_run/qgrp3p_v3_ftb50k.pth
+PP=$HOME/Mortal3/mortal:$HOME/zeroppo-qgrp:$REPO   # v5：main@692e32b（v5 bot3p + set_coop）
+CK=$HOME/qgrp3p_run/qgrp3p_v5_full.pth             # v5 权重（train-006，n=3000 电池 2.024）
 TRANS=$HOME/zeroppo-grp/grp_trans3p_v1.pth
 TCREPO=$HOME/zeroppo-grp
 URL=${RIICHI_URL:-wss://game.riichi.dev/ws/ranked}
