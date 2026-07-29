@@ -26,8 +26,65 @@
 `request_id`，并对 `possible_actions` 做合法性兜底。**不需要 riichienv 包**（纯 MJAI 桥）。
 全在 gpu16b **aigc venv**（torch/libriichi3p/websockets）。
 
-## 状态（2026-07-14）
+## 打牌器后端（`--backend`）
 
+| backend          | 打牌器                                              | coop / level / pt 旋钮                        | 权重参数                                                  |
+| ---------------- | --------------------------------------------------- | --------------------------------------------- | --------------------------------------------------------- |
+| `qgrp`（默认） | qgrp3p 的`EvCalc3P` + trans_core                  | 全部适用                                      | `--qgrp-ckpt` / `--trans-ckpt` / `--transcore-repo` |
+| `mortal3`      | Mortal3 原生 Brain/DQN，greedy argmax Q = mse-best  | **不适用**（无 EV 混合，coop 自动关）   | `--mortal-ckpt`                                         |
+| `hybrid`       | **qgrp3p v5 打主 + `A·ref_r3` 每动作修正** | 全部适用（bot 本体仍是 QgrpBot3P + EvCalc3P） | qgrp 三件 +`--ref-ckpt` / `--alpha`                   |
+
+### hybrid —— qgrp3p v5 + ref_r3（2026-07-28 上线）
+
+```
+score[a] = EV_qgrp_v5[a] + A · Adv_ref_r3[a]        A 定档 0.18（pt）
+```
+
+`ref_r3` = workspace 仓 design-001 分支反事实 best-response 网。两侧同为「±90 制
+顺位 pt」（qgrp `rank_pts` 默认与 design-001 标签 UMA 都是 `(90,0,−90)`）⇒ 直接
+相加、不换算；ref 侧取 advantage（减 `mean_legal`，因为它的 Q 绝对水平位是自由
+gauge）。实现在 **workspace 仓** `hybrid/`（`--hybrid-repo` 指其仓根，默认
+`/home/administrator/workspace`），定案与标定数据见
+[workspace/hybrid/README.md](../../workspace/hybrid/README.md)。
+
+**上线（双 bot + coop，A=0.18）**：
+
+```bash
+cd ~/riichienv && bash online3p/live_start.sh --backend hybrid --alpha 0.18
+```
+
+**dry-run（vs 3 个内置 tsumogiri，不影响 rating）**：
+
+```bash
+cd ~/riichienv && /home/administrator/miniconda3/envs/mortal/bin/python -m online3p.client \
+  --url wss://game.riichi.dev/ws/validate --bot-name Nosam --backend hybrid --alpha 0.18 \
+  --qgrp-ckpt $HOME/qgrp3p_run/qgrp3p_v5_full.pth \
+  --trans-ckpt $HOME/zeroppo-grp/grp_trans3p_v1.pth \
+  --transcore-repo $HOME/zeroppo-grp --device cuda --no-reconnect --no-coop
+```
+
+hybrid 专属旋钮（也可用 env：`HYBRID_ALPHA` / `HYBRID_REF_CKPT` / `HYBRID_WS_REPO`）：
+
+| flag                 | 默认                          | 含义                                                                                                  |
+| -------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `--alpha`          | `0.18`                      | ref 修正因子（pt）。0 = 退化成纯 qgrp v5                                                              |
+| `--ref-ckpt`       | workspace`snaps/ref_r3.pth` | ref 权重                                                                                              |
+| `--ref-slope`      | `1.0`                       | ref advantage→pt 标定斜率（`1.487` = ref_r3 实测，做 pt 无偏才用）                                 |
+| `--ref-coop-scale` | 关                            | 开 = coop 局把 A 乘`w_self`（0.18→0.09），让 ref 项相对 qgrp 自身项权重恒定；默认关 = A 绝对值恒定 |
+| `--hybrid-repo`    | `~/workspace`               | workspace 仓根（含`hybrid/`）                                                                       |
+
+启动日志会打全套生效值（ckpt / `.so` 路径与 `ACTION_SPACE` / 定档配置 / coop 权重），
+以 `引擎就绪(hybrid)` 开头——上线后先核对这一行。
+
+> ⚠ hybrid 会把 **workspace 那份 `libriichi3p.so`** 抢占进 `sys.path` 头部（as81
+> joint、752 平面，ref_r3 的输入要求）。它与 `Mortal3/mortal` 那份对 obs/mask 逐位
+> 一致（1614 tick 实测），但额外带 `dataset.shanten_waits_batch`（v5 向听/待张平面
+> 的 rust 快路径，且与 qgrp python 口径逐手一致），所以对 v5 是升级不是降级。
+
+## 状态（2026-07-28）
+
+- ✅ **hybrid 后端上线**：`--backend hybrid --alpha 0.18`（qgrp3p v5 + 0.18·ref_r3）；
+  `/ws/validate` → `validation_result: passed`（本机 4070）。
 - ✅ **真机验证通过**：Nosam / Mason 各连 `/ws/validate` → `validation_result: passed`（gpu16b + 本机 4070 均过）。
 - ✅ **本机 4070 部署上线 ranked**：`live_start.sh` 起两进程续排位（coop 默认开、自动重连、同起）。
 - ✅ **实测被凑同一桌**（我两 bot + 1 外部玩家）；平台允许同主同桌。
@@ -56,21 +113,90 @@ cd ~/riichienv && bash online3p/live_stop.sh --force  # 立即强杀（不等当
 > 各自打完当前一整局（收到 `end_game`）才退出；空闲排队时约 5s 内退。也响应 `SIGTERM`/`SIGINT`。
 > 手动单进程调试：`--url .../ws/validate --no-reconnect --no-coop` 跑单局验证。
 
-## 协作（用户设计）—— 侧信道指纹，`--coop` 开
+## 协作（用户设计）—— 侧信道同桌检测，`--coop` 开
 
 协作 EV 已就绪且数值精确（`../qgrp/bot3p/ev.py::EvCalc3P.set_coop`：同桌时每小局
 `leaf_pt = 0.5·自己 − 0.5·第三家`，rank-pt 零和下 = 自己 EV + 0.5·队友 EV）。
 **riichi.dev 协议不暴露玩家身份 / 对局 ID**（`start_game` 只有座位号，observation 只有牌局
-状态）——一个 bot 无法从协议判定队友是否同桌。故用**侧信道**（`coop_detect.py`，两 bot 均本机
-进程）：每局 start_kyoku 各自把座位无关的公开指纹（场风/局/本场/供托/亲/三家点数/宝牌指示）写
-共享目录、settle 后读对方；指纹一致且座位不同 ⇒ 同桌，第三家 = 剩下座位 → `set_coop`。
+状态）——一个 bot 无法从协议判定队友是否同桌，只能靠**侧信道**（两 bot 均本机进程，
+共享 `/tmp/riichi_coop`，`coop_detect.py`）。
 
-- **默认开**（用户裁定＝核心测试；`--no-coop` 关＝纯自己 EV）。**只传"是否同桌"的公开局面指纹，
-  不传任何私有手牌信息**，每 bot 仍只用自己观测独立优化 `0.5·self−0.5·third`（非隐藏信息共谋）。
-- 匹配用**整局不变的对局指纹**（首小局 E1 公开状态），每小局重查直到命中并锁存——即便首局两进程
-  错开，次局瞬时重读也能命中（对方 announce 在 120s TTL 内）。已单测四例 + 真机实测同桌两 bot 均 `coop ON`。
-- 旋钮：`--coop-dir`（默认 `/tmp/riichi_coop`）、`--teammates Nosam,Mason`、`--coop-wait-sec`（首局轮询上限）、
-  `--coop-w-self/--coop-w-third`（默认 0.5/0.5）。
+**判定方式 `--coop-mode`（用户裁定 2026-07-28）**
+
+- **`timing`（默认，现役）** 两段式：① `start_game` 接收时刻差 < `--coop-sg-gate`（5s）
+  粗筛「进入游戏的时间差」；② 公开事件流存在**连续公共段** ≥ `--coop-min-run`（8）条，
+  且时间偏移同期一致（|median Δt| < `--coop-offset-gate` 5s、90 分位抖动 <
+  `--coop-spread-gate` 2s）；③ 座位不同 ⇒ 第三家 = 剩下那个座位。**命中即开**——不等下
+  一小局，命中当场 `set_coop` 并重算本小局 `leaf_pt`（`set_coop` 只改权重，`leaf_pt` 是
+  `start_kyoku` 时算好的）。判据在**每个决策点、喂 bot 之前**重查（动作是 `_feed` 里算好
+  存 `pending` 的，`request_action` 只是取出来发走，那时才开就晚一个决策）；命中后**仍持续
+  announce**，否则队友永远读不到自己。
+- **`fingerprint`（旧，保留可回退）**：start_kyoku 公开指纹相同。**已知会误判**——开局 E1
+  全 35000 / oya=0 / honba=kyotaku=0 时，指纹里唯一有区分力的只剩 dora_marker（约 1/34
+  撞上）。2026-07-28 实测撞了：一个 bot 首小局误判同桌并锁存整局，全程按
+  `0.5·自己 − 0.5·第三家` 压制一个与它无关的真人；且命中后不再 announce，队友恒
+  `coop OFF`（线上看到的**单向不对称**就是这个成因）。
+
+**真实 log 验证**（`verify_coop_timing.py`，拿 RAW 帧离线回放；也是上线门2）：5×5 局交叉，
+金标准 = 整局公开事件序列的最长连续公共段占比（真同桌实测 371/371、730/730 逐条全同）。
+timing 判据 **4 对真同桌全部命中、21 对不同桌全部拒绝，0 假阳 0 假阴**。阈值来自实测边界：
+不同桌整局最多凑出 7 条连续相同、前 12 条内只有 1–3 条，而同桌前 12 条即全对 ⇒
+`min_run=8` 落在两者之间。真机上两 bot **双向对称**命中：`third_seat=0`、连续段 8/10 条、
+Δstart_game 0.839s、抖动 0.46/0.98s。
+
+⚠ 时间**不能**用来逐条配对：客户端同步阻塞，`bot.react()` 推理期间不读 WS，帧接收时刻
+被自己的 GPU 耗时污染（同一条事件两 bot 实测差 0.3–0.5s 且方向不定）。第一版按「绝对时刻
+最近」配对并要求零冲突，在**真同桌**样本上得 match=10 / mismatch=46，被自己的否决条件拒掉
+（假阴）。改成「内容对齐连续段 + 偏移一致性」才稳。
+
+- **默认开**（用户裁定＝核心测试；`--no-coop` 关＝纯自己 EV）。**只传公开局面/时序特征，
+  不传任何私有手牌信息**（`public_digest` 把 tehais、自家摸牌的 pai、座位号一律抹掉），
+  每 bot 仍只用自己观测独立优化 `0.5·self−0.5·third`（非隐藏信息共谋）。
+- 旋钮：`--coop-dir`（默认 `/tmp/riichi_coop`）、`--teammates Nosam,Mason`、
+  `--coop-w-self/--coop-w-third`（默认 0.5/0.5）、`--coop-mode`、`--coop-sg-gate`、
+  `--coop-min-run`、`--coop-offset-gate`、`--coop-spread-gate`。
+
+## 上线纪律（两道门，2026-07-28 事故后强制）
+
+**正门只有一条命令**：
+
+```bash
+cd ~/riichienv && bash online3p/go_live.sh --backend hybrid --alpha 0.18
+```
+
+它依次跑：**门1** 离线双边回放（`replay_smoke.py`，整条链路 `handle_frame → _feed → _note_event → _try_coop_timing → bot.react` 真实推理 `→ _on_request_action → _sanitize`，
+双边跑还覆盖 coop **命中**路径）→ **门2** coop 判据无假阳（`verify_coop_timing.py`）
+→ 签发通行证（`gate.py`，绑定上线链路 **代码指纹** + 2h 时效）→ `live_start.sh`。
+
+> **2026-07-29：去掉了原门3**（`/ws/validate` 拿 `passed:true`）。它是唯一真正连平台的
+> 门，但要求先停机——ranked 在跑时用同一 JWT 连 validate 会把在跑的 bot 挤掉（又是摸切），
+> 于是每次上线都得「停机 → 过门 → 再起」。**代价**：门禁不再覆盖「平台协议 / 服务器行为
+> 变化」这类问题，只剩离线两门 + 代码指纹。要手动验平台（需 bot 当前没在 ranked 上跑）：
+> `python -m online3p.client --url wss://game.riichi.dev/ws/validate --bot-name Nosam
+> --no-reconnect --no-coop`。
+
+关于 **2h 时效**：只在**发出上线命令那一刻**检查一次（`gate.py check`，由 hook 调用），
+指的是「通行证签发 → 上线」的间隔上限。**bot 跑起来后不再校验，不会 2 小时自动断**。
+
+Claude Code 的 PreToolUse hook（`online3p/hooks/live_gate.sh`，注册在
+`~/.claude/settings.json`）拦下任何绕过正门的 `live_start.sh` / `ws/ranked` 命令，除非
+通行证有效。**代码一改指纹就变，通行证立即失效**，必须重新过门。（改 settings 后需重启
+Claude Code session 才生效。）
+
+> 事故经过：改完 `client.py` 只做 `py_compile` 就上 ranked。字段改名（`coop_min_events`
+> → `coop_min_run`）漏改了 `_try_coop_timing` 里一处引用，`AttributeError` 每帧触发 →
+> 断线重连 120+ 次 → bot 全程无法出牌 → 平台代打摸切，真实排位分受损。**语法检查抓不到
+> 属性名错误，必须跑运行时门。**
+
+- ranked 正在跑时**不要**用同一 JWT 连 validate（撞 token 双连会把在跑的 bot 挤掉，又是
+  摸切）——这正是门3被去掉的原因；如需手动验平台，先停机。
+- 只过门不上线：`GATES_ONLY=1 bash online3p/go_live.sh`。
+- 回放门的输入样本固定在 `online3p/_samples/{A,B}.frames.jsonl`（用
+  `RIICHI_RAW=1` 采一局**同桌**对局即可更新；同桌样本才能覆盖 coop 命中路径）。
+- 进程与 session 的关系：`live_start.sh` 用 `setsid nohup`，两 bot 的 SID = 自身 PID、
+  无控制终端 ⇒ **关掉终端 / Claude Code session 不会杀它们**；但父链仍挂在 WSL 的
+  `SessionLeader` 下，`wsl --shutdown` 或 Windows 重启会一起没，且进程级崩溃**无守护**
+  （client 内部只有 WS 重连）。要真正常驻建议改用 systemd user service（`Restart=always`）。
 
 ## pt 目标函数（打牌倾向调参）
 
@@ -107,8 +233,7 @@ EV(动作) = Σ_leaf w_leaf · [ Σ_r P(名次=r|leaf)·rank_pts[r]   ← 名次
 - **`live_start.sh` 透传任意 client flag**：脚本名后面接的 flag 原样转发给两 bot（同参），如
   `bash online3p/live_start.sh --coop-w-third 0.4 --pt-per-1000 0.3 --level 4.0 --aggr 17.4`
   （⚠ 别透传 `--bot-name`/`--url`——bot 名由脚本设、URL 用 `RIICHI_URL` env，否则撞 token 双连；
-  `LEVEL=`/`AGGR=` env 仍可用，命令行 flag 优先）。生效值全打在**引擎就绪日志**（`level/aggr | pt:
-  rank_pts/pt_per_1000/bonus | coop(self/third)`），`live_stop`→`live_start` 重启后据此确认。
+  `LEVEL=`/`AGGR=` env 仍可用，命令行 flag 优先）。生效值全打在**引擎就绪日志**（`level/aggr | pt: rank_pts/pt_per_1000/bonus | coop(self/third)`），`live_stop`→`live_start` 重启后据此确认。
 - ⚠ 与协作权重 `--coop-w-self/--coop-w-third`（上一节）是**两组独立**旋钮：前者调「名次 vs 素点」的口径，
   后者调「自己 vs 压第三家」的协作强度。
 - ⚠ 另与 arena **评测报告**口径 `REPORT_PTS`（`arena3p/stat_report.py` 的 avg_pt 顺位点 + 单列素点）是两码事：

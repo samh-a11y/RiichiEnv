@@ -36,6 +36,7 @@ import json
 import os
 import pathlib
 import sys
+import time
 import traceback
 from dataclasses import dataclass
 
@@ -87,10 +88,18 @@ class ClientConfig:
     trans_ckpt: str
     transcore_repo: str
     device: str
-    # 打牌器后端：qgrp（EvCalc3P + trans_core，支持 coop/level/pt 旋钮）或
-    # mortal3（Mortal3 原生 Brain/DQN，greedy argmax Q = mse-best；EV/coop 旋钮不适用）
+    # 打牌器后端：qgrp（EvCalc3P + trans_core，支持 coop/level/pt 旋钮）、
+    # mortal3（Mortal3 原生 Brain/DQN，greedy argmax Q = mse-best；EV/coop 旋钮不适用）或
+    # hybrid（workspace/hybrid：qgrp3p v5 打主 + alpha·ref_r3 每动作修正；沿用 qgrp
+    # 的 EvCalc3P ⇒ coop/level/pt 旋钮全部适用）
     backend: str = "qgrp"
     mortal_ckpt: str = ""          # backend=mortal3 权重（mortal3p-msebest）
+    # ── backend=hybrid 专用 ──
+    hybrid_repo: str = ""          # workspace 仓根（含 hybrid/），空=模块内默认
+    ref_ckpt: str = ""             # ref_r3 权重（空=workspace/snaps/ref_r3.pth）
+    alpha: float = 0.18            # 修正因子：score = EV_qgrp + alpha·Adv_ref（pt）
+    ref_slope: float = 1.0         # ref advantage→pt 标定斜率（1.487=r3 门3 实测）
+    ref_coop_scale: bool = False   # True=coop 局把 alpha 乘 w_self（见 mix_bot.eff_alpha）
     coop_w_self: float = 0.5
     coop_w_third: float = 0.5
     # 剥削旋钮（aux 水平/激进度条件，train-003 §2；三家同值＝告诉模型对手 profile，模型
@@ -113,6 +122,17 @@ class ClientConfig:
     # 不传任何私有手牌信息，每 bot 仍只用自己观测独立优化 0.5·self−0.5·third）
     coop_enabled: bool = True
     coop_dir: str = "/tmp/riichi_coop"
+    # 同桌判定方式（用户裁定 2026-07-28）：
+    #   "timing"（默认，现役）= 进入游戏时刻差 <coop_sg_gate 粗筛 + 公开事件流**连续
+    #       公共段** ≥coop_min_run 条 + 时间偏移同期一致 ⇒ 命中即开（不等下一小局）；
+    #   "fingerprint"（旧）= start_kyoku 公开指纹相同，开局 E1 全 35000 时只靠
+    #       dora_marker 区分，2026-07-28 实测误判过整局（详见 coop_detect.py 注释）。
+    coop_mode: str = "timing"
+    coop_sg_gate: float = 5.0      # start_game 接收时刻差上限（秒）
+    coop_min_run: int = 8          # 公开事件**连续公共段**最少条数（判别力主要来源）
+    coop_offset_gate: float = 5.0  # |median(Δt)| 上限：确认两局同期进行
+    coop_spread_gate: float = 2.0  # 90 分位时间抖动上限（实测同桌 ≈1.2s）
+    coop_keep: int = 120           # 侧信道交换的事件序列长度上限
     teammates: tuple = ("Nosam", "Mason")
     coop_wait_sec: float = 3.0     # 同桌握手轮询上限（覆盖两进程到达时间差）
     # 优雅停机：stop_file 出现 或 收到 SIGTERM/SIGINT → **打完当前对局**后退出（不中断进行中对局）
@@ -136,6 +156,12 @@ class OnlineMjaiClient:
         self._coop_third: int | None = None
         self._game_fp: str | None = None
         self._coop_attempts = 0
+        # coop_mode="timing"（现役）用的运行时特征：start_game 的本地接收时刻 +
+        # 公开事件流 (接收时刻, 内容摘要) 序列，在每个决策点（request_action）比对。
+        self._t_start_game: float | None = None
+        self._feats: list = []      # [[t, digest], …]，只留最近 cfg.coop_keep 条
+        self._recv_t: float = 0.0   # 当前帧的接收时刻（帧循环里刷新）
+        self._coop_last_try: float = 0.0   # 侧信道 IO 限流
         # 优雅停机：收到信号/停机文件后，打完当前对局才退（不中断进行中对局）
         self._stop = False
         self._in_game = False
@@ -152,8 +178,10 @@ class OnlineMjaiClient:
         if not self._raw_path:
             return
         try:
-            rec = {"n": self._raw_n, "dir": direction, "seat": self.my_seat,
-                   "frame": frame}
+            # t = 本帧接收时刻（send 方向则为所属 recv 帧的时刻）：coop timing 判据
+            # 的时间源，也是 verify_coop_timing.py 离线回放的输入
+            rec = {"n": self._raw_n, "t": round(self._recv_t or time.time(), 4),
+                   "dir": direction, "seat": self.my_seat, "frame": frame}
             if isinstance(frame, dict) and frame.get("type") == "request_action":
                 obs_b64 = frame.get("observation")
                 if isinstance(obs_b64, str):
@@ -190,6 +218,9 @@ class OnlineMjaiClient:
         if self.cfg.backend == "mortal3":
             self._build_mortal3_engine()
             return
+        if self.cfg.backend == "hybrid":
+            self._build_hybrid_engine()
+            return
         try:
             from bot3p.bot import QgrpBot3P
             from bot3p.config import BotConfig3P
@@ -223,6 +254,53 @@ class OnlineMjaiClient:
                  f"{self.bot_cfg.tsumo_bonus_pt}/{self.bot_cfg.yakuman_bonus_pt}/"
                  f"{self.bot_cfg.nagashi_bonus_pt}"
                  f" | coop(self/third)={self.cfg.coop_w_self}/{self.cfg.coop_w_third}")
+
+    def _build_hybrid_engine(self) -> None:
+        """混合后端（workspace/hybrid）：qgrp3p v5 的 pt EV 上叠加 alpha·ref_r3 的
+        每动作 advantage。两侧同为「顺位 pt，±90 制」（qgrp rank_pts 默认与
+        design-001 标签 UMA 都是 (90,0,−90)）⇒ 直接相加不换算。
+
+        bot 本体仍是 QgrpBot3P（只把 engine 换成 MixEngine3P），evcalc 也仍是
+        EvCalc3P ⇒ coop / level / pt 旋钮与 backend=qgrp 完全同款、全部适用。
+        ⚠ 引导顺序：hybrid 会把 workspace 那份 libriichi3p.so 抢占进 sys.path 头部。
+        它与 Mortal3/mortal 那份对 obs/mask 逐位一致（hybrid/check_so_parity.py 实测
+        1614 tick 全等），但额外带 dataset.shanten_waits_batch（v5 向听/待张平面的
+        rust 快路径），所以这是升级不是降级。"""
+        repo_hint = self.cfg.hybrid_repo or "/home/administrator/workspace"
+        hybrid_dir = os.path.join(repo_hint, "hybrid")
+        if not os.path.isdir(hybrid_dir):
+            raise SystemExit(f"backend=hybrid 需 {hybrid_dir}/（--hybrid-repo 指 workspace 仓根）")
+        if hybrid_dir not in sys.path:
+            sys.path.insert(0, hybrid_dir)
+        try:
+            import mix_bot                       # noqa: PLC0415
+            from ref_q import REF_CKPT_DEFAULT, RefQ  # noqa: PLC0415
+        except ImportError as e:  # noqa: BLE001
+            raise SystemExit(f"import workspace/hybrid 失败：{e}")
+        qgrp_repo = mix_bot.bootstrap()           # 校验 as81 .so + qgrp 仓入 path
+        from bot3p.ev import EvCalc3P             # noqa: PLC0415
+
+        over = dict(name=self.cfg.my_name)
+        if self.cfg.level is not None:
+            over["level"] = self.cfg.level
+        if self.cfg.aggr is not None:
+            over["aggr"] = self.cfg.aggr
+        for k in ("rank_pts", "pt_per_1000", "tsumo_bonus_pt",
+                  "yakuman_bonus_pt", "nagashi_bonus_pt"):
+            v = getattr(self.cfg, k)
+            if v is not None:
+                over[k] = v
+        self.bot_cfg = mix_bot.build_cfg(
+            self.cfg.qgrp_ckpt, self.cfg.trans_ckpt, self.cfg.transcore_repo,
+            self.cfg.device, **over)
+        self.evcalc = EvCalc3P(self.bot_cfg)      # 模型 + trans_core 只载一次
+        self.refq = RefQ(self.cfg.ref_ckpt or str(REF_CKPT_DEFAULT),
+                         self.cfg.device, self.cfg.ref_slope)
+        self._mix_bot = mix_bot
+        self.log("引擎就绪(hybrid) " + mix_bot.banner(
+            self.bot_cfg, self.refq, self.cfg.alpha, qgrp_repo
+        ).replace("\n", " | ") + f" | coop_scale={self.cfg.ref_coop_scale}"
+            f" | coop(self/third)={self.cfg.coop_w_self}/{self.cfg.coop_w_third}")
 
     def _build_mortal3_engine(self) -> None:
         """Mortal3 原生 3p 后端——镜像 arena3p/engines/mjai_runner.py::build_joint_bot
@@ -271,32 +349,101 @@ class OnlineMjaiClient:
         self.pending = None
         if self.cfg.backend == "mortal3":
             self.bot = self._MortalBot(self.engine, self.my_seat)  # 每局重建 Bot，引擎复用
+        elif self.cfg.backend == "hybrid":
+            self.bot = self._mix_bot.build_mix_bot(
+                self.my_seat, self.bot_cfg, self.refq, self.cfg.alpha,
+                evcalc=self.evcalc, ref_coop_scale=self.cfg.ref_coop_scale)
+            self.evcalc.clear_coop()   # 新局先复位；同桌与否在 start_kyoku 定
         else:
             self.bot = self._QgrpBot3P(self.my_seat, self.bot_cfg, evcalc=self.evcalc)
             self.evcalc.clear_coop()   # 新局先复位；同桌与否在 start_kyoku 定
         self._coop_third = None    # 每局重置：同桌判定基于本局指纹
         self._game_fp = None
         self._coop_attempts = 0
+        self._t_start_game = self._recv_t   # 本帧的接收时刻（timing 判据①的锚）
+        self._feats = []
         self._in_game = True       # 进行中对局：优雅停机须打完它
-        self.log(f"start_game seat={self.my_seat} coop={'侧信道' if self.coop else '关'}")
+        self.log(f"start_game seat={self.my_seat} coop="
+                 f"{self.cfg.coop_mode if self.coop else '关'}")
+
+    # ── timing 判据：公开事件流特征 + 每决策点比对（用户裁定 2026-07-28）──
+    def _note_event(self, ev: dict, t_recv: float) -> None:
+        """把一条 mjai 事件的 (接收时刻, 公开内容摘要) 记入特征序列。"""
+        from .coop_detect import public_digest
+        self._feats.append([t_recv, public_digest(ev)])
+        if len(self._feats) > self.cfg.coop_keep:
+            del self._feats[:-self.cfg.coop_keep]
+
+    def _try_coop_timing(self) -> None:
+        """决策点触发：announce 自己 + 比对队友；命中即立刻开协作（不等下一小局）。
+
+        set_coop 只改 EvCalc3P 的 coop 权重，而 leaf_pt 是 start_kyoku 时算好的
+        （qgrp bot3p/ev.py:603-648）⇒ 命中后必须**重算本小局的 leaf_pt**，否则协作
+        目标要到下一小局才生效。重调 start_kyoku 是幂等的（入口态不变，只额外清一次
+        前缀 KV cache）。
+        """
+        if self.coop is None or self.my_seat is None or self.evcalc is None:
+            return
+        now = time.time()
+        if now - self._coop_last_try < 0.15:   # 侧信道 IO 限流（事件流很密）
+            return
+        self._coop_last_try = now
+        if self._coop_third is not None:
+            # 已命中也要继续 announce：旧 fingerprint 实现命中后就不再 announce，
+            # 导致队友永远读不到自己、恒为 coop OFF（2026-07-28 实测的不对称成因）。
+            try:
+                self.coop.announce(self.my_seat, self._t_start_game, self._feats)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        if len(self._feats) < self.cfg.coop_min_run:
+            return
+        try:
+            hit = self.coop.detect(self.my_seat, self._t_start_game, self._feats)
+        except Exception:  # noqa: BLE001
+            self.log("coop(timing) 检测异常：\n" + traceback.format_exc())
+            return
+        self._coop_attempts += 1
+        if hit is None:
+            return
+        third, info = hit
+        self._coop_third = third
+        self.evcalc.set_coop(third, self.cfg.coop_w_self, self.cfg.coop_w_third)
+        entry = getattr(getattr(self.bot, "encoder", None), "entry", None)
+        if entry is not None:                  # 让协作目标本小局立即生效
+            try:
+                self.evcalc.start_kyoku(entry, self.my_seat)
+            except Exception:  # noqa: BLE001
+                self.log("coop 命中后重算 leaf_pt 失败（下一小局自动生效）：\n"
+                         + traceback.format_exc())
+        self.log(f"[coop ON] seat={self.my_seat} third_seat={third} "
+                 f"（timing: Δstart_game={info.get('dt_start_game')}s "
+                 f"连续公共段 {info.get('run')} 条 offset={info.get('offset')}s "
+                 f"抖动={info.get('jitter')}s，"
+                 f"peer={info.get('peer')}@{info.get('peer_seat')}）")
 
     # ── 每小局开局：侧信道判同桌（用整局不变指纹，重查直到命中）→ set/clear coop ──
     def _on_start_kyoku(self, ev: dict) -> None:
         if self.coop is None or self.my_seat is None:
             return
-        from .coop_detect import fingerprint
-        if self._game_fp is None:              # 首小局：锚定整局不变的对局指纹
-            self._game_fp = fingerprint(ev)
-        if self._coop_third is None:           # 尚未命中 → 刷新自己指纹并重查
-            try:
-                wait = self.cfg.coop_wait_sec if self._coop_attempts == 0 else 0.0
-                third = self.coop.detect(self.my_seat, self._game_fp, wait=wait)
-            except Exception:  # noqa: BLE001
-                self.log("coop 检测异常：\n" + traceback.format_exc())
-                third = None
-            self._coop_attempts += 1
-            if third is not None:
-                self._coop_third = third
+        if self.cfg.coop_mode == "fingerprint":
+            from .coop_detect import fingerprint
+            if self._game_fp is None:          # 首小局：锚定整局不变的对局指纹
+                self._game_fp = fingerprint(ev)
+            if self._coop_third is None:       # 尚未命中 → 刷新自己指纹并重查
+                try:
+                    wait = (self.cfg.coop_wait_sec if self._coop_attempts == 0
+                            else 0.0)
+                    third = self.coop.detect(self.my_seat, self._game_fp,
+                                             wait=wait)
+                except Exception:  # noqa: BLE001
+                    self.log("coop 检测异常：\n" + traceback.format_exc())
+                    third = None
+                self._coop_attempts += 1
+                if third is not None:
+                    self._coop_third = third
+        # timing 模式的判定在决策点做（_try_coop_timing）；这里只负责把当前 coop 状态
+        # 应用到本小局——set_coop 必须在 evcalc.start_kyoku 之前，否则 leaf_pt 不含协作。
         kyoku = f"{ev.get('bakaze')}{ev.get('kyoku')}-{ev.get('honba')}"
         if self._coop_third is not None:
             self.evcalc.set_coop(self._coop_third, self.cfg.coop_w_self,
@@ -315,8 +462,13 @@ class OnlineMjaiClient:
             self._on_start_game(ev)
         elif et == "start_kyoku":
             self._on_start_kyoku(ev)   # 协作判定须在喂 bot（→evcalc.start_kyoku）前
+        self._note_event(ev, self._recv_t)   # 公开事件流特征（timing 判据②的原料）
         if self.bot is None:
             return
+        # 同桌判定必须在 react **之前**：动作是在这里算好存 pending 的，
+        # request_action 只是把它取出来发走 ⇒ 到那时再开协作就晚了一个决策。
+        if self.cfg.coop_mode == "timing":
+            self._try_coop_timing()
         try:
             r = self.bot.react(json.dumps(ev, separators=(",", ":")))
         except Exception:  # noqa: BLE001
@@ -437,6 +589,7 @@ class OnlineMjaiClient:
                 for f in frames:
                     if not isinstance(f, dict):
                         continue
+                    self._recv_t = time.time()   # 本帧接收时刻（timing 判据的时间源）
                     self._raw("recv", f)
                     out, control = self.handle_frame(f)
                     if out is not None:
@@ -492,9 +645,25 @@ def build_config(argv=None) -> ClientConfig:
     ap.add_argument("--transcore-repo", default=os.environ.get(
         "QGRP3P_TRANSCORE_REPO", "/root/zeroppo-grp"))
     ap.add_argument("--device", default=os.environ.get("QGRP3P_DEVICE", "cuda"))
-    # 后端：qgrp（默认）或 mortal3（Mortal3 原生 Brain/DQN，mse-best greedy Q）
-    ap.add_argument("--backend", choices=["qgrp", "mortal3"], default="qgrp",
-                    help="打牌器后端：qgrp（EvCalc/trans_core）或 mortal3（原生 Q=mse-best）")
+    # 后端：qgrp（默认）/ mortal3（原生 Brain/DQN，mse-best greedy Q）/ hybrid（v5+ref_r3）
+    ap.add_argument("--backend", choices=["qgrp", "mortal3", "hybrid"],
+                    default="qgrp",
+                    help="打牌器后端：qgrp（EvCalc/trans_core）、mortal3（原生 Q=mse-best）"
+                         "或 hybrid（qgrp3p v5 + alpha·ref_r3 修正，coop/pt 旋钮同 qgrp）")
+    ap.add_argument("--hybrid-repo", dest="hybrid_repo", default=os.environ.get(
+        "HYBRID_WS_REPO", "/home/administrator/workspace"),
+        help="backend=hybrid：workspace 仓根（含 hybrid/）")
+    ap.add_argument("--ref-ckpt", dest="ref_ckpt", default=os.environ.get(
+        "HYBRID_REF_CKPT", ""), help="backend=hybrid：ref_r3 权重（空=仓内 snaps/ref_r3.pth）")
+    ap.add_argument("--alpha", type=float, default=float(os.environ.get(
+        "HYBRID_ALPHA", "0.18")), help="backend=hybrid：ref 修正因子（pt），默认 0.18")
+    ap.add_argument("--ref-slope", dest="ref_slope", type=float,
+                    default=float(os.environ.get("HYBRID_REF_SLOPE", "1.0")),
+                    help="backend=hybrid：ref advantage→pt 标定斜率（1.487=r3 实测；默认 1）")
+    ap.add_argument("--ref-coop-scale", dest="ref_coop_scale",
+                    action="store_true", default=False,
+                    help="backend=hybrid：coop 局把 alpha 乘 w_self（0.18→0.09，"
+                         "让 ref 项相对 qgrp 自身项的权重恒定）；默认关=A 绝对值恒定")
     ap.add_argument("--mortal-ckpt", dest="mortal_ckpt", default=os.environ.get(
         "MORTAL3_CKPT",
         "/home/administrator/Mortal3/train/sl3p-online-mse/ckpt/mortal-80000.pth"),
@@ -528,6 +697,18 @@ def build_config(argv=None) -> ClientConfig:
                     help="两 bot 互认的共享目录")
     ap.add_argument("--teammates", default="Nosam,Mason", help="我方 bot 名集合")
     ap.add_argument("--coop-wait-sec", type=float, default=3.0)
+    ap.add_argument("--coop-mode", dest="coop_mode",
+                    choices=["timing", "fingerprint"], default="timing",
+                    help="同桌判定：timing（默认）= 进入游戏时刻差粗筛 + 公开事件流"
+                         "「时刻×内容」对齐；fingerprint = 旧的 start_kyoku 公开指纹")
+    ap.add_argument("--coop-sg-gate", dest="coop_sg_gate", type=float, default=5.0,
+                    help="timing：两 bot start_game 接收时刻差上限（秒），默认 5")
+    ap.add_argument("--coop-min-run", dest="coop_min_run", type=int, default=8,
+                    help="timing：公开事件连续公共段最少条数，默认 5（判别力主要来源）")
+    ap.add_argument("--coop-offset-gate", dest="coop_offset_gate", type=float,
+                    default=5.0, help="timing：|median(Δt)| 上限（秒），确认同期，默认 5")
+    ap.add_argument("--coop-spread-gate", dest="coop_spread_gate", type=float,
+                    default=2.0, help="timing：90 分位时间抖动上限（秒），默认 2")
     ap.add_argument("--stop-file", default="/tmp/riichi_coop/STOP",
                     help="该文件出现→打完当前对局后优雅退出（两 bot 同一文件＝同停）")
     args = ap.parse_args(argv)
@@ -553,6 +734,9 @@ def build_config(argv=None) -> ClientConfig:
         qgrp_ckpt=args.qgrp_ckpt, trans_ckpt=args.trans_ckpt,
         transcore_repo=args.transcore_repo, device=args.device,
         backend=args.backend, mortal_ckpt=args.mortal_ckpt,
+        hybrid_repo=args.hybrid_repo, ref_ckpt=args.ref_ckpt,
+        alpha=args.alpha, ref_slope=args.ref_slope,
+        ref_coop_scale=args.ref_coop_scale,
         coop_w_self=args.coop_w_self, coop_w_third=args.coop_w_third,
         level=args.level, aggr=args.aggr,
         rank_pts=(tuple(float(x) for x in args.rank_pts.split(","))
@@ -566,7 +750,10 @@ def build_config(argv=None) -> ClientConfig:
         reconnect_backoff_sec=args.reconnect_backoff_sec,
         coop_enabled=coop_enabled, coop_dir=args.coop_dir,
         teammates=tuple(t.strip() for t in args.teammates.split(",")),
-        coop_wait_sec=args.coop_wait_sec, stop_file=args.stop_file)
+        coop_wait_sec=args.coop_wait_sec, stop_file=args.stop_file,
+        coop_mode=args.coop_mode, coop_sg_gate=args.coop_sg_gate,
+        coop_min_run=args.coop_min_run, coop_offset_gate=args.coop_offset_gate,
+        coop_spread_gate=args.coop_spread_gate)
 
 
 def main(argv=None) -> None:
@@ -578,10 +765,24 @@ def main(argv=None) -> None:
         pass
     coop = None
     if cfg.coop_enabled:
-        from .coop_detect import FileFingerprintCoop
-        coop = FileFingerprintCoop(cfg.coop_dir, cfg.my_name, cfg.teammates)
+        if cfg.coop_mode == "timing":
+            from .coop_detect import TimingCoop
+            coop = TimingCoop(cfg.coop_dir, cfg.my_name, cfg.teammates,
+                              sg_gate=cfg.coop_sg_gate,
+                              min_run=cfg.coop_min_run,
+                              offset_gate=cfg.coop_offset_gate,
+                              spread_gate=cfg.coop_spread_gate,
+                              keep=cfg.coop_keep)
+            detail = (f"mode=timing Δstart_game<{cfg.coop_sg_gate}s "
+                      f"连续公共段≥{cfg.coop_min_run}条 "
+                      f"|offset|<{cfg.coop_offset_gate}s 抖动<{cfg.coop_spread_gate}s")
+        else:
+            from .coop_detect import FileFingerprintCoop
+            coop = FileFingerprintCoop(cfg.coop_dir, cfg.my_name, cfg.teammates)
+            detail = "mode=fingerprint（旧：开局 E1 靠 dora_marker 区分，易误判）"
         sys.stderr.write(f"[{cfg.my_name}] 侧信道协作已开：dir={cfg.coop_dir} "
-                         f"teammates={cfg.teammates}（仅传是否同桌，无手牌信息）\n")
+                         f"teammates={cfg.teammates} {detail}"
+                         f"（仅传公开局面/时序特征，无手牌信息）\n")
     client = OnlineMjaiClient(cfg, coop=coop)
     try:
         asyncio.run(client.run())

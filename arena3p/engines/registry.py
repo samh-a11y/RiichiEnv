@@ -124,6 +124,35 @@ REGISTRY: dict[str, dict] = {
                                                HOME / "qgrp")).resolve()),
         "dialect": "standard",  # 原生 3 座，仅 kita↔nukidora（同 joint/v8）
     },
+    # ---- workspace/hybrid：qgrp3p v5 打主 + alpha·ref_r3 每动作修正 ----
+    #      入口是 workspace 仓的 hybrid/run_stdio.py（协议同 qgrp3p：ready 握手 +
+    #      事件数组入 / 一条动作出）。**不要在这里拼 PYTHONPATH**：hybrid 自己引导
+    #      sys.path，且必须让 workspace 那份 as81 .so 抢在 Mortal3/mortal 之前——
+    #      两份 obs/mask 逐位一致（workspace hybrid/check_so_parity.py 实测），但只有
+    #      workspace 那份带 dataset.shanten_waits_batch（v5 向听平面的 rust 快路径）。
+    "hybrid3p": {
+        "argv": lambda seat: [
+            os.environ.get("ARENA_HYBRID3P_PY") or str(CONDA_MORTAL_PY),
+            str(pathlib.Path(os.environ.get("ARENA_HYBRID_WS",
+                                            HOME / "workspace")).resolve()
+                / "hybrid" / "run_stdio.py"),
+            "--player-id", str(seat),
+            "--alpha", os.environ.get("HYBRID_ALPHA", "0.18"),
+            "--qgrp-ckpt", os.environ.get(
+                "QGRP3P_CKPT", str(HOME / "qgrp3p_run" / "qgrp3p_v5_full.pth")),
+            "--trans-ckpt", os.environ.get(
+                "QGRP3P_TRANS", str(HOME / "zeroppo-grp" / "grp_trans3p_v1.pth")),
+            "--transcore-repo", os.environ.get(
+                "QGRP3P_TRANSCORE_REPO", str(HOME / "zeroppo-grp")),
+            "--device", os.environ.get(
+                "QGRP3P_DEVICE", os.environ.get("ARENA_DEVICE", "cpu")),
+            *(os.environ.get("ARENA_HYBRID3P_EXTRA", "").split() or []),
+        ],
+        "env": _env(),
+        "cwd": str(pathlib.Path(os.environ.get("ARENA_HYBRID_WS",
+                                               HOME / "workspace")).resolve()),
+        "dialect": "standard",
+    },
     # ---- qgrp design-005（三麻 BC 打牌器：qgrp 仓 bc3p/，token Transformer 直接
     #      策略头，无 EV 机器，故不需 trans/transcore；协议同 qgrp3p）----
     "bc3p": {
